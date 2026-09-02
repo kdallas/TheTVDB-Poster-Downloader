@@ -7,7 +7,7 @@
  * run() does the work, errors are exceptions caught as "Error: ...".
  */
 
-class TvdbCli
+class PosterCli
 {
     // Inputs
     private $titleInput = "";   // --title="Star City"
@@ -518,22 +518,12 @@ class TvdbCli
 
                 // Root poster (skipped when one already exists).
                 if (!$hasPoster) {
-                    // Download into ./artwork/ (same naming as --poster).
+                    // Cached to artwork/ as <seriesId>-<basename> by
+                    // default, or downloaded straight into the folder
+                    // when CACHE_ARTWORK=false (savePoster()).
                     $url = $winner['image'];
-                    $filename = $seriesId . '-' . basename(parse_url($url, PHP_URL_PATH));
-                    $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
-                    if (!is_dir($artworkDir)) {
-                        mkdir($artworkDir, 0777, true);
-                    }
-                    $dest = $artworkDir . DIRECTORY_SEPARATOR . $filename;
-                    TvdbApi::download($url, $dest);
-
-                    // Copy into the show folder as poster.<ext>.
-                    $ext = pathinfo($dest, PATHINFO_EXTENSION);
-                    $target = $cleanDir . DIRECTORY_SEPARATOR . 'poster.' . $ext;
-                    if (!copy($dest, $target)) {
-                        throw new Exception("could not copy poster into {$target}");
-                    }
+                    $cacheName = $seriesId . '-' . basename(parse_url($url, PHP_URL_PATH));
+                    $target = $this->savePoster($url, $cacheName, $cleanDir);
 
                     // Note the attempt when a later match supplied the poster.
                     $nth = $attempt > 1 ? ' [' . $this->ordinal($attempt) . ']' : '';
@@ -548,6 +538,41 @@ class TvdbCli
                 printf("Skip   : %s (%s)\n", $title, $e->getMessage());
             }
         }
+    }
+
+    /**
+     * Save a poster image into a folder. Default: download to the artwork
+     * cache first (<cacheName>) and copy it across, the way --poster
+     * names its files. With CACHE_ARTWORK=false in .env the image is
+     * downloaded straight into the folder as poster.<ext> and no cache
+     * copy is kept. Returns the path of the poster inside the folder.
+     */
+    private function savePoster(string $url, string $cacheName, string $folderPath): string
+    {
+        $ext = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION);
+        if ($ext === '') {
+            $ext = 'jpg';
+        }
+        $target = $folderPath . DIRECTORY_SEPARATOR . 'poster.' . $ext;
+
+        if (!PosterEnv::envFlag('CACHE_ARTWORK', true)) {
+            // Direct download — no ./artwork copy.
+            TvdbApi::download($url, $target);
+            return $target;
+        }
+
+        // Cache first, then copy into the folder.
+        $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+        if (!is_dir($artworkDir)) {
+            mkdir($artworkDir, 0777, true);
+        }
+        $dest = $artworkDir . DIRECTORY_SEPARATOR . $cacheName;
+        TvdbApi::download($url, $dest);
+
+        if (!copy($dest, $target)) {
+            throw new Exception("could not copy poster into {$target}");
+        }
+        return $target;
     }
 
     /**
@@ -599,24 +624,14 @@ class TvdbCli
                     continue;
                 }
 
-                // artwork/<seriesId>-<nn>-<basename>; nn is zero-padded
-                // ("01", and "00" for Specials = TVDB season 0).
+                // Cached to artwork/ as <seriesId>-<nn>-<basename> (nn is
+                // zero-padded: "01", "00" for Specials = TVDB season 0),
+                // or downloaded straight into the season folder when
+                // CACHE_ARTWORK=false (savePoster()).
                 $url = $season['image'];
                 $nn = str_pad((string) $seasonDir['number'], 2, '0', STR_PAD_LEFT);
-                $filename = $seriesId . '-' . $nn . '-' . basename(parse_url($url, PHP_URL_PATH));
-                $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
-                if (!is_dir($artworkDir)) {
-                    mkdir($artworkDir, 0777, true);
-                }
-                $dest = $artworkDir . DIRECTORY_SEPARATOR . $filename;
-                TvdbApi::download($url, $dest);
-
-                // Copy into the season folder as poster.<ext>.
-                $ext = pathinfo($dest, PATHINFO_EXTENSION);
-                $target = $seasonPath . DIRECTORY_SEPARATOR . 'poster.' . $ext;
-                if (!copy($dest, $target)) {
-                    throw new Exception("could not copy poster into {$target}");
-                }
+                $cacheName = $seriesId . '-' . $nn . '-' . basename(parse_url($url, PHP_URL_PATH));
+                $target = $this->savePoster($url, $cacheName, $seasonPath);
 
                 printf("Done   : %s/%s → %s (season %d)\n",
                     $title, $seasonDir['name'], Paths::sanitizePath($target, false), $seasonDir['number']);

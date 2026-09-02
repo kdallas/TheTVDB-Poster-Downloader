@@ -17,6 +17,8 @@ A small PHP CLI tool that talks to the [TheTVDB v4 API](https://thetvdb.github.i
 
    The `AUTH_TOKEN` and `AUTH_EXPIRY` entries are written automatically by the scripts — you only provide the key.
 
+   Optionally add `CACHE_ARTWORK=false` to skip the `artwork/` cache: posters are then downloaded straight into each folder and no extra copy is kept.
+
 2. Run `php run.php` from the project folder.
 
 Login happens automatically on first run — there is deliberately no login command. The token is reused until one day before it expires, to avoid requesting more tokens than necessary. `.env` holds live secrets and is gitignored.
@@ -77,7 +79,7 @@ After the root poster pass, goes one level deeper per show folder. Folders named
 
 ## Output and naming
 
-- All downloads are cached in `artwork/` (gitignored):
+- Downloads are cached in `artwork/` (gitignored) — unless `CACHE_ARTWORK=false` is set in `.env`, in which case posters are written directly into the folders and nothing is cached:
   - series posters: `<seriesId>-<image basename>.jpg` — e.g. `449146-6a0e1f176a889.jpg`
   - season posters: `<seriesId>-<nn>-<image basename>.jpg` — e.g. `101501-01-6116a0eb8f514.jpg`
 - `Done :` lines report the matched series; `Skip : <reason>` lines report per-folder problems, and the run continues with the next folder.

@@ -1,9 +1,9 @@
 <?php
 
 /**
- * Shared TVDB API helpers for the CLI entry point: .env parsing, login,
- * token management, and GET requests. Static methods, like the Config /
- * Probe / ScanDir helpers in the encoder wrapper project.
+ * TVDB API client: login, token management, GET requests, and file
+ * downloads. .env access lives in PosterEnv, so this class stays purely
+ * about the API. Static methods.
  */
 
 class TvdbApi
@@ -11,28 +11,6 @@ class TvdbApi
     const API_URL = 'https://api4.thetvdb.com/v4';
     // Re-auth instead of reusing the token once less than this remains.
     const TOKEN_MIN_LIFETIME = 86400; // 1 day
-
-    public static function envFile(): string
-    {
-        return __DIR__ . DIRECTORY_SEPARATOR . '.env';
-    }
-
-    /** Parse .env into KEY=VALUE pairs (skipping comments and blank lines). */
-    public static function env(): array
-    {
-        $env = [];
-        foreach (file(self::envFile(), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-            $line = trim($line);
-            if ($line === '' || $line[0] === '#') {
-                continue;
-            }
-            if (strpos($line, '=') !== false) {
-                [$key, $value] = explode('=', $line, 2);
-                $env[trim($key)] = trim($value);
-            }
-        }
-        return $env;
-    }
 
     /** Extract the exp claim from a JWT, or null if it has none. */
     public static function jwtExpiry(string $token): ?int
@@ -52,7 +30,7 @@ class TvdbApi
      */
     public static function login(): array
     {
-        $env = self::env();
+        $env = PosterEnv::env();
         $apiKey = $env['API_KEY'] ?? '';
         if ($apiKey === '') {
             throw new Exception('API_KEY is empty in .env');
@@ -103,7 +81,7 @@ class TvdbApi
         $expiry = self::jwtExpiry($token) ?? time() + 30 * 24 * 60 * 60;
 
         // Write token and expiry back into .env, leaving everything else untouched.
-        $contents = file_get_contents(self::envFile());
+        $contents = file_get_contents(PosterEnv::envFile());
         $contents = preg_replace('/^AUTH_TOKEN=.*$/m', 'AUTH_TOKEN=' . $token, $contents);
         $contents = preg_replace('/^AUTH_EXPIRY=.*$/m', 'AUTH_EXPIRY=' . $expiry, $contents);
 
@@ -114,8 +92,8 @@ class TvdbApi
             $contents .= 'AUTH_EXPIRY=' . $expiry . PHP_EOL;
         }
 
-        if (file_put_contents(self::envFile(), $contents) === false) {
-            throw new Exception('Could not write ' . self::envFile());
+        if (file_put_contents(PosterEnv::envFile(), $contents) === false) {
+            throw new Exception('Could not write ' . PosterEnv::envFile());
         }
 
         return [$token, $expiry];
@@ -128,7 +106,7 @@ class TvdbApi
      */
     public static function token(): string
     {
-        $env = self::env();
+        $env = PosterEnv::env();
         $token = $env['AUTH_TOKEN'] ?? '';
         $expiry = (int) ($env['AUTH_EXPIRY'] ?? 0);
 

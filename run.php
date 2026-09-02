@@ -17,5 +17,5 @@ spl_autoload_register(function ($class_name) {
     include $class_name . '.php';
 });
 
-$app = new TvdbCli($argv);
+$app = new PosterCli($argv);
 $app->run();
