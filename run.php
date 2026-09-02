@@ -11,6 +11,7 @@ USAGE EXAMPLES:
     Movie:    php run.php --title="Interstellar" --movie
     Movie:    php run.php --poster=131079 --movie
     Movie:    php run.php --scan=/x/Movies --posters --movie
+    Clean:    php run.php --scan=/x/Movies --posters --clean
 
 NOTE: Login happens automatically (first run, or when the stored token is
 within 1 day of expiry) — there is deliberately no manual login command.

@@ -16,6 +16,7 @@ class PosterCli
     private $postersFlag = false;  // --posters (with --scan, fetch posters for the library's shows)
     private $seasonsFlag = false;  // --seasons (with --scan --posters, fetch season posters too)
     private $movieFlag = false;    // --movie (movie mode: /movies/ endpoints, movie- id prefix)
+    private $cleanFlag = false;    // --clean (with --scan --posters, tidy up after each poster)
 
     public function __construct($argv) {
         try {
@@ -76,6 +77,9 @@ class PosterCli
             elseif ($arg === '--movie') {
                 $this->movieFlag = true;
             }
+            elseif ($arg === '--clean') {
+                $this->cleanFlag = true;
+            }
             else {
                 throw new Exception("Unknown argument: {$arg}");
             }
@@ -108,6 +112,9 @@ class PosterCli
         }
         if ($this->movieFlag && $this->seasonsFlag) {
             throw new Exception('--seasons cannot be used together with --movie');
+        }
+        if ($this->cleanFlag && !$this->postersFlag) {
+            throw new Exception('--clean can only be used together with --scan --posters');
         }
     }
 
@@ -582,6 +589,12 @@ class PosterCli
                     printf("Done   : %s → %s (%s-%s)%s\n",
                         $title, Paths::sanitizePath($target, false),
                         $type, $mediaId, $nth);
+
+                    // --clean: personal tidy-up, only after a successful
+                    // poster download + copy.
+                    if ($this->cleanFlag) {
+                        $this->cleanFolder($cleanDir, $target);
+                    }
                 }
 
                 // --seasons: go one nested level deeper for season posters.
@@ -627,6 +640,66 @@ class PosterCli
             throw new Exception("could not copy poster into {$target}");
         }
         return $target;
+    }
+
+    /**
+     * --clean pass, run only after a successful poster download + copy
+     * (personal tidy-up, printed as "Clean :" lines):
+     *   1. delete *.nfo and *.txt files (release-scene text files)
+     *   2. strip the release tags listed in RELEASE_TAGS (.env, comma
+     *      separated, e.g. "-PSA,-XYZ") from the end of *.mkv/*.mp4
+     *      filename bases
+     *   3. save a copy of the poster next to the (first) video file,
+     *      named <video name>-poster.<ext>
+     */
+    private function cleanFolder(string $folder, string $posterPath)
+    {
+        // 1. Release-scene text files.
+        $textFiles = array_merge(
+            glob($folder . DIRECTORY_SEPARATOR . '*.nfo') ?: [],
+            glob($folder . DIRECTORY_SEPARATOR . '*.txt') ?: []
+        );
+        foreach ($textFiles as $file) {
+            if (unlink($file)) {
+                printf("Clean : deleted %s\n", basename($file));
+            }
+        }
+
+        // 2. Strip release tags from video filename bases.
+        $tags = PosterEnv::envList('RELEASE_TAGS');
+        $videos = array_merge(
+            glob($folder . DIRECTORY_SEPARATOR . '*.mkv') ?: [],
+            glob($folder . DIRECTORY_SEPARATOR . '*.mp4') ?: []
+        );
+        $posterBase = ''; // first video's (cleaned) base, for step 3
+        foreach ($videos as $i => $video) {
+            $base = pathinfo($video, PATHINFO_FILENAME);
+            $ext  = pathinfo($video, PATHINFO_EXTENSION);
+            $newBase = $base;
+            foreach ($tags as $tag) {
+                if ($tag !== '' && str_ends_with($newBase, $tag)) {
+                    $newBase = substr($newBase, 0, -strlen($tag));
+                }
+            }
+            if ($newBase !== $base) {
+                $newPath = $folder . DIRECTORY_SEPARATOR . $newBase . '.' . $ext;
+                if (rename($video, $newPath)) {
+                    printf("Clean : renamed %s → %s\n", basename($video), basename($newPath));
+                }
+            }
+            if ($i === 0) {
+                $posterBase = $newBase;
+            }
+        }
+
+        // 3. Poster copy named after the movie file.
+        if ($posterBase !== '') {
+            $posterExt = pathinfo($posterPath, PATHINFO_EXTENSION);
+            $copyPath = $folder . DIRECTORY_SEPARATOR . $posterBase . '-poster.' . $posterExt;
+            if (copy($posterPath, $copyPath)) {
+                printf("Clean : saved %s\n", basename($copyPath));
+            }
+        }
     }
 
     /**

@@ -96,6 +96,10 @@ class TvdbApi
             throw new Exception('Could not write ' . PosterEnv::envFile());
         }
 
+        // The file changed — drop PosterEnv's cache so the new token and
+        // expiry are what subsequent reads see.
+        PosterEnv::refresh();
+
         return [$token, $expiry];
     }
 

@@ -96,6 +96,14 @@ php run.php --scan=/x/Movies --posters --movie
 
 Movie ids are plain numbers to the user — the API's `movie-` prefix is handled behind the scenes, though a pasted `movie-131079` from search results is accepted too — artwork comes from the movie's extended record, and movie folders are flat — video files sit directly inside — so the single-folder detection works the same way. `--seasons` does not apply to movies.
 
+### Tidy up after downloading — `--clean`
+
+```sh
+php run.php --scan=/x/Movies --posters --clean
+```
+
+A personal clean-up pass, run after each successful poster download: deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=-PSA,-XYZ` in `.env`) from video filename suffixes, and saves a `<video name>-poster.jpg` copy of the poster.
+
 ## Output and naming
 
 - Downloads are cached in `artwork/` (gitignored) — unless `CACHE_ARTWORK=false` is set in `.env`, in which case posters are written directly into the folders and nothing is cached:
