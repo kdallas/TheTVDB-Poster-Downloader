@@ -67,7 +67,11 @@ php run.php --scan=/x/SciFi --posters
 
 For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`.
 
-You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders (or a flat folder with episode files) is detected and processed on its own.
+You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders, or a flat folder with the episode files sitting directly inside, is detected and processed on its own:
+
+```sh
+php run.php --scan="/x/SciFi/Star City" --posters
+```
 
 ### Fetch season posters too — `--seasons`
 
