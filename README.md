@@ -44,7 +44,7 @@ Movies:            php run.php --scan=/x/Movies --posters --movie
 php run.php --title="My Hero Academia"
 ```
 
-Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). English titles are fetched from the API's translation records. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
+Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
 
 ### Fetch a poster by series ID — `--poster=`
 
@@ -68,7 +68,7 @@ Lists the folder contents: subdirectories first, then files. Windows (`G:\...`),
 php run.php --scan=/x/SciFi --posters
 ```
 
-For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`. A parenthesized year ends the meaningful part of the folder name, so quality/format suffixes after it (e.g. `Interstellar (2014).DL.4k`) are dropped automatically. In movie mode, any video files at the folder root mark it as the movie itself, so subfolders like `Subs` are ignored.
+For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`. A year ends the meaningful part of the folder name — parenthesized (`Interstellar (2014).DL.4k`) or a bare dot-separated token in release-style names (`Interstellar.2014.1080p.10bit.WEBRip...`) — so quality/format suffixes after it are dropped automatically. In movie mode, any video files at the folder root mark it as the movie itself, so subfolders like `Subs` are ignored.
 
 You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders, or a flat folder with the episode files sitting directly inside, is detected and processed on its own:
 

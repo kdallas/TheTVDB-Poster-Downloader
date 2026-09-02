@@ -112,23 +112,35 @@ class PosterCli
     }
 
     /**
-     * Split a title that may carry a year in parentheses — the common
-     * folder-name convention "Lazarus (2025)". The year is kept as a
-     * ranking hint, and it marks the end of the meaningful title:
-     * everything from the year onwards is dropped, so trailing quality
-     * tags ("Interstellar (2014).DL.4k" → "Interstellar") vanish too.
-     * Returns ['title' => 'Lazarus', 'year' => 2025]; year is 0 when
-     * absent.
+     * Split a title that may carry a year — the common folder-name
+     * conventions "Lazarus (2025)" and release-style "The.Runner.2026.
+     * 1080p.WEBRip". The year (parenthesized, or a bare dot/space
+     * separated token in 1900-2099) is kept as a ranking hint and marks
+     * the end of the meaningful title: everything from it onwards is
+     * dropped, and dots are treated as word separators. Returns
+     * ['title' => 'Lazarus', 'year' => 2025]; year is 0 when absent.
      */
     private function splitYear(string $input): array
     {
+        $input = trim($input);
         $year = 0;
+
         if (preg_match('/\((\d{4})\)/', $input, $m, PREG_OFFSET_CAPTURE)) {
+            // Parenthesized year: "Lazarus (2025)".
             $year = (int) $m[1][0];
-            $input = substr($input, 0, $m[0][1]); // drop the year and everything after it
+            $input = substr($input, 0, $m[0][1]);
+        } elseif (preg_match('/[.\s](19\d{2}|20\d{2})(?=$|[.\s])/', $input, $m, PREG_OFFSET_CAPTURE)) {
+            // Bare year token after a dot/space: "The.Runner.2026.1080p".
+            // The delimiter requirement skips titles that START with a
+            // number ("2001.A.Space.Odyssey.1968..."), and the 1900-2099
+            // range skips titles like "The.4400".
+            $year = (int) $m[1][0];
+            $input = substr($input, 0, $m[0][1]);
         }
+
+        // Release-style names use dots as word separators.
         return [
-            'title' => trim($input),
+            'title' => trim(str_replace('.', ' ', $input)),
             'year'  => $year,
         ];
     }
@@ -174,8 +186,10 @@ class PosterCli
                 return $tierDiff;
             }
 
-            $aYear = (int) substr($a['first_air_time'] ?? '', 0, 4);
-            $bYear = (int) substr($b['first_air_time'] ?? '', 0, 4);
+            // Some records only carry a year, no full air date — use it
+            // as the fallback so new releases rank correctly.
+            $aYear = (int) (substr($a['first_air_time'] ?? '', 0, 4) ?: ($a['year'] ?? 0));
+            $bYear = (int) (substr($b['first_air_time'] ?? '', 0, 4) ?: ($b['year'] ?? 0));
 
             // Prefer the year the title carried — "Lazarus (2025)" — so
             // a remake or name-clash from that year wins over the rest.
@@ -273,7 +287,8 @@ class PosterCli
                 $r['id'] ?? '?',
                 $r['name'] ?? '(no name)',
                 $english !== '' ? $english : '—',
-                !empty($r['first_air_time']) ? substr($r['first_air_time'], 0, 10) : '—',
+                !empty($r['first_air_time']) ? substr($r['first_air_time'], 0, 10)
+                    : (!empty($r['year']) ? $r['year'] : '—'),
                 !empty($r['network']) ? $r['network'] : '—',
             ];
         }
