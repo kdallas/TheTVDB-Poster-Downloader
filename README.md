@@ -1,2 +1,83 @@
-# TheTVDB-Poster-Downloader
-PHP CLI Script for matching folder names to TV shows and downloading poster artwork
+# TheTVDB Poster Downloader
+
+A small PHP CLI tool that talks to the [TheTVDB v4 API](https://thetvdb.github.io/v4-api/) and fetches poster artwork for your TV library. Point it at a folder of TV shows and it matches each folder to a series, downloads the poster, and drops `poster.jpg` (or `poster.png`) into the folder — the convention Plex, Kodi, and Jellyfin all understand. With the `--seasons` flag it also fetches posters for `Season N` / `Specials` folders.
+
+## Requirements
+
+- PHP 8.0+ CLI with the `curl` extension enabled (developed on PHP 8.5, Windows + Git Bash)
+- A [TheTVDB](https://thetvdb.com) API key (v4 API)
+
+## Setup
+
+1. Create a `.env` file in the project folder containing your API key:
+
+   ```
+   API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ```
+
+   The `AUTH_TOKEN` and `AUTH_EXPIRY` entries are written automatically by the scripts — you only provide the key.
+
+2. Run `php run.php` from the project folder.
+
+Login happens automatically on first run — there is deliberately no login command. The token is reused until one day before it expires, to avoid requesting more tokens than necessary. `.env` holds live secrets and is gitignored.
+
+## Usage
+
+Everything goes through the single entry point, `run.php`:
+
+```
+Search a series:   php run.php --title="Star City"
+Poster by id:      php run.php --poster=449146
+Scan a library:    php run.php --scan=/x/SciFi
+Fetch posters:     php run.php --scan=/x/SciFi --download
+Fetch + seasons:   php run.php --scan=/x/SciFi --download --seasons
+```
+
+### Search a series — `--title=`
+
+```sh
+php run.php --title="My Hero Academia"
+```
+
+Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). English titles are fetched from the API's translation records. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
+
+### Fetch a poster by series ID — `--poster=`
+
+```sh
+php run.php --poster=449146
+```
+
+Picks the poster the way the TVDB website does — Poster type, then English series-level posters, then English, then series-level, highest score winning — and saves it to `artwork/`, named `449146-6a0e1f176a889.jpg` (`<seriesId>-<image basename>`).
+
+### Scan a library — `--scan=`
+
+```sh
+php run.php --scan=/x/SciFi
+```
+
+Lists the folder contents: subdirectories first, then files. Windows (`G:\...`), unix (`/x/...`), and relative paths are accepted interchangeably.
+
+### Fetch posters for a library — `--download`
+
+```sh
+php run.php --scan=/x/SciFi --download
+```
+
+For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`.
+
+You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders (or a flat folder with episode files) is detected and processed on its own.
+
+### Fetch season posters too — `--seasons`
+
+```sh
+php run.php --scan=/x/SciFi --download --seasons
+```
+
+After the root poster pass, goes one level deeper per show folder. Folders named `Season N` (or zero-padded `Season NN`) and `Specials` (TVDB's season 0) each get their season's poster, saved to `artwork/` as `<seriesId>-<nn>-<basename>.jpg` (e.g. `101501-01-6116a0eb8f514.jpg`) and copied into the season folder as `poster.<ext>`. Season folders that already have a poster, or seasons with no artwork on TVDB, are skipped.
+
+## Output and naming
+
+- All downloads are cached in `artwork/` (gitignored):
+  - series posters: `<seriesId>-<image basename>.jpg` — e.g. `449146-6a0e1f176a889.jpg`
+  - season posters: `<seriesId>-<nn>-<image basename>.jpg` — e.g. `101501-01-6116a0eb8f514.jpg`
+- `Done :` lines report the matched series; `Skip : <reason>` lines report per-folder problems, and the run continues with the next folder.
