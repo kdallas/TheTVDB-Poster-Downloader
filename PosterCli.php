@@ -15,6 +15,7 @@ class PosterCli
     private $scanPath = "";     // --scan=/path/to/dir
     private $postersFlag = false;  // --posters (with --scan, fetch posters for the library's shows)
     private $seasonsFlag = false;  // --seasons (with --scan --posters, fetch season posters too)
+    private $movieFlag = false;    // --movie (movie mode: /movies/ endpoints, movie- id prefix)
 
     public function __construct($argv) {
         try {
@@ -72,6 +73,9 @@ class PosterCli
             elseif ($arg === '--seasons') {
                 $this->seasonsFlag = true;
             }
+            elseif ($arg === '--movie') {
+                $this->movieFlag = true;
+            }
             else {
                 throw new Exception("Unknown argument: {$arg}");
             }
@@ -85,8 +89,16 @@ class PosterCli
                                 '       php run.php --poster=449146' . "\n" .
                                 '       php run.php --scan=/path/to/dir');
         }
-        if ($this->posterId !== '' && !ctype_digit($this->posterId)) {
-            throw new Exception('Invalid --poster value "' . $this->posterId . '" — expected a numeric series id');
+        if ($this->posterId !== '') {
+            // The mode's id prefix (series- / movie-) is accepted but
+            // optional — search tables show it, users shouldn't have to
+            // strip it themselves.
+            $prefix = $this->movieFlag ? 'movie-' : 'series-';
+            $posterCheck = str_replace($prefix, '', $this->posterId);
+            if (!ctype_digit($posterCheck)) {
+                throw new Exception('Invalid --poster value "' . $this->posterId . '" — expected a numeric id'
+                                  . " (optionally with a {$prefix} prefix)");
+            }
         }
         if ($this->postersFlag && empty($this->scanPath)) {
             throw new Exception('--posters can only be used together with --scan');
@@ -94,24 +106,29 @@ class PosterCli
         if ($this->seasonsFlag && !$this->postersFlag) {
             throw new Exception('--seasons can only be used together with --scan --posters');
         }
+        if ($this->movieFlag && $this->seasonsFlag) {
+            throw new Exception('--seasons cannot be used together with --movie');
+        }
     }
 
     /**
      * Split a title that may carry a year in parentheses — the common
-     * folder-name convention "Lazarus (2025)". The parenthesized year is
-     * removed from the search term and returned separately so ranking can
-     * use it. The first parenthesized 4-digit value found is taken as the
-     * year; any others (rare) are stripped too. Returns
-     * ['title' => 'Lazarus', 'year' => 2025]; year is 0 when absent.
+     * folder-name convention "Lazarus (2025)". The year is kept as a
+     * ranking hint, and it marks the end of the meaningful title:
+     * everything from the year onwards is dropped, so trailing quality
+     * tags ("Interstellar (2014).DL.4k" → "Interstellar") vanish too.
+     * Returns ['title' => 'Lazarus', 'year' => 2025]; year is 0 when
+     * absent.
      */
     private function splitYear(string $input): array
     {
         $year = 0;
-        if (preg_match('/\((\d{4})\)/', $input, $m)) {
-            $year = (int) $m[1];
+        if (preg_match('/\((\d{4})\)/', $input, $m, PREG_OFFSET_CAPTURE)) {
+            $year = (int) $m[1][0];
+            $input = substr($input, 0, $m[0][1]); // drop the year and everything after it
         }
         return [
-            'title' => trim(preg_replace('/\(\d{4}\)/', '', $input)),
+            'title' => trim($input),
             'year'  => $year,
         ];
     }
@@ -189,12 +206,12 @@ class PosterCli
             return $result['name'] ?? '';
         }
 
-        $seriesId = str_replace('series-', '', $result['id'] ?? '');
-        if ($seriesId === '') {
+        $id = str_replace($this->movieFlag ? 'movie-' : 'series-', '', $result['id'] ?? '');
+        if ($id === '') {
             return '';
         }
 
-        [$code, $body] = TvdbApi::get('/series/' . $seriesId . '/translations/eng');
+        [$code, $body] = TvdbApi::get(($this->movieFlag ? '/movies/' : '/series/') . $id . '/translations/eng');
         if ($code !== 200) {
             return '';
         }
@@ -225,7 +242,10 @@ class PosterCli
         $query  = $parsed['title'];
         $year   = $parsed['year'];
 
-        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => 'series']);
+        // --movie switches the search to movies (same /search endpoint).
+        $type = $this->movieFlag ? 'movie' : 'series';
+
+        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $type]);
         $data = json_decode($response, true);
 
         if ($httpCode === 401) {
@@ -239,7 +259,7 @@ class PosterCli
         $results = $this->rankResults($results, $query, $year);
 
         $yearNote = $year > 0 ? ", year {$year}" : '';
-        printf("Search \"%s\" (series%s): %d result(s)\n\n", $query, $yearNote, count($results));
+        printf("Search \"%s\" (%s%s): %d result(s)\n\n", $query, $type, $yearNote, count($results));
 
         if ($results === []) {
             printf("No results.\n");
@@ -269,25 +289,32 @@ class PosterCli
     private function posterLookup() {
         $typeMap = $this->fetchArtworkTypes();
 
-        [$httpCode, $response] = TvdbApi::get('/series/' . $this->posterId . '/artworks');
+        // The mode's id prefix (series- / movie-) is optional; movie mode
+        // reads /movies/{id}/extended (there is no /movies/{id}/artworks
+        // endpoint).
+        $id   = str_replace($this->movieFlag ? 'movie-' : 'series-', '', $this->posterId);
+        $kind = $this->movieFlag ? 'movie' : 'series';
+        $artPath = ($this->movieFlag ? '/movies/' . $id . '/extended' : '/series/' . $id . '/artworks');
+
+        [$httpCode, $response] = TvdbApi::get($artPath);
         $data = json_decode($response, true);
 
         if ($httpCode === 404) {
-            throw new Exception("Series {$this->posterId} not found");
+            throw new Exception(ucfirst($kind) . " {$id} not found");
         }
         if ($httpCode !== 200) {
             throw new Exception("Artwork lookup failed (HTTP {$httpCode}): {$response}");
         }
 
-        $seriesName = $data['data']['name'] ?? $this->posterId;
+        $name = $data['data']['name'] ?? $id;
 
         $selection = $this->selectPoster($data['data']['artworks'] ?? [], $typeMap);
         $winner = $selection['winner'];
         if ($winner === null) {
-            throw new Exception("No poster artwork found for series {$this->posterId}");
+            throw new Exception("No poster artwork found for {$kind} {$id}");
         }
 
-        printf("Poster lookup for series %s \"%s\":\n", $this->posterId, $seriesName);
+        printf("Poster lookup for %s %s \"%s\":\n", $kind, $id, $name);
 
         // Show the funnel narrowing: each tier's count, stopping at the
         // tier that produced the winner.
@@ -313,9 +340,9 @@ class PosterCli
         ]];
         echo $this->renderTable(['Type', 'Artwork ID', 'Language', 'Score', 'Size (W×H)', 'Image'], $rows);
 
-        // Download to ./artwork/<seriesId>-<basename of image URL>.
+        // Download to ./artwork/<id>-<basename of image URL>.
         $url = $winner['image'];
-        $filename = $this->posterId . '-' . basename(parse_url($url, PHP_URL_PATH));
+        $filename = $id . '-' . basename(parse_url($url, PHP_URL_PATH));
         $dir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
         if (!is_dir($dir)) {
             mkdir($dir, 0777, true);
@@ -434,6 +461,7 @@ class PosterCli
 
     /**
      * --scan --posters mode. For each immediate child directory (a TV show
+     * folder — or a movie folder with --movie):
      * folder): skip it if it already has poster.jpg/poster.png; otherwise
      * use the folder name as the series title, find the show, pick its
      * poster (same funnel as --poster), download it to ./artwork/, and copy
@@ -445,6 +473,13 @@ class PosterCli
     private function downloadForFolders(array $dirs) {
         // Fetch the artwork type map once for the whole run.
         $typeMap = $this->fetchArtworkTypes();
+
+        // Movie mode decides the search type, the id prefix, and the
+        // artwork endpoint — resolved once instead of per folder.
+        $type      = $this->movieFlag ? 'movie' : 'series';
+        $idPrefix  = $this->movieFlag ? 'movie-' : 'series-';
+        $artBase   = $this->movieFlag ? '/movies/' : '/series/';
+        $artSuffix = $this->movieFlag ? '/extended' : '/artworks';
 
         foreach ($dirs as $dir) {
             $title = basename($dir);
@@ -469,8 +504,9 @@ class PosterCli
                     }
                 }
 
-                // Folder name (minus any parenthesized year) = series title.
-                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => 'series']);
+                // Folder name (minus any parenthesized year and trailing
+                // junk) = title.
+                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $type]);
                 $data = json_decode($response, true);
                 if ($httpCode !== 200) {
                     throw new Exception("search failed (HTTP {$httpCode})");
@@ -479,7 +515,7 @@ class PosterCli
                 $results = $this->enrichEnglish($data['data'] ?? []);
                 $results = $this->rankResults($results, $query, $year);
                 if ($results === []) {
-                    printf("Skip   : %s (no series found)\n", $title);
+                    printf("Skip   : %s (no match found)\n", $title);
                     continue;
                 }
 
@@ -489,21 +525,22 @@ class PosterCli
                 // best match is the one the user actually wants. The
                 // attempt number goes on the Done line as "[2nd]" etc.
                 $winner = null;
-                $seriesId = null;
+                $mediaId = null;
                 $attempt = 0;
                 if (!$hasPoster) {
                     foreach ($results as $r) {
-                        $candidateId = str_replace('series-', '', $r['id']);
+                        $candidateId = str_replace($idPrefix, '', $r['id']);
                         $attempt++;
 
-                        [$httpCode, $response] = TvdbApi::get('/series/' . $candidateId . '/artworks');
+                        $artPath = $artBase . $candidateId . $artSuffix;
+                        [$httpCode, $response] = TvdbApi::get($artPath);
                         $data = json_decode($response, true);
                         if ($httpCode !== 200) {
                             throw new Exception("artwork lookup failed (HTTP {$httpCode})");
                         }
                         $winner = $this->selectPoster($data['data']['artworks'] ?? [], $typeMap)['winner'];
                         if ($winner !== null) {
-                            $seriesId = $candidateId;
+                            $mediaId = $candidateId;
                             break;
                         }
                     }
@@ -513,26 +550,28 @@ class PosterCli
                 } else {
                     // Root poster exists; with --seasons the season pass
                     // just uses the top-ranked match.
-                    $seriesId = str_replace('series-', '', $results[0]['id']);
+                    $mediaId = str_replace($idPrefix, '', $results[0]['id']);
                 }
 
                 // Root poster (skipped when one already exists).
                 if (!$hasPoster) {
-                    // Cached to artwork/ as <seriesId>-<basename> by
+                    // Cached to artwork/ as <id>-<basename> by
                     // default, or downloaded straight into the folder
                     // when CACHE_ARTWORK=false (savePoster()).
                     $url = $winner['image'];
-                    $cacheName = $seriesId . '-' . basename(parse_url($url, PHP_URL_PATH));
+                    $cacheName = $mediaId . '-' . basename(parse_url($url, PHP_URL_PATH));
                     $target = $this->savePoster($url, $cacheName, $cleanDir);
 
                     // Note the attempt when a later match supplied the poster.
                     $nth = $attempt > 1 ? ' [' . $this->ordinal($attempt) . ']' : '';
-                    printf("Done   : %s → %s (series-%s)%s\n", $title, Paths::sanitizePath($target, false), $seriesId, $nth);
+                    printf("Done   : %s → %s (%s-%s)%s\n",
+                        $title, Paths::sanitizePath($target, false),
+                        $type, $mediaId, $nth);
                 }
 
                 // --seasons: go one nested level deeper for season posters.
                 if ($this->seasonsFlag) {
-                    $this->downloadSeasonPosters($cleanDir, $title, $seriesId);
+                    $this->downloadSeasonPosters($cleanDir, $title, $mediaId);
                 }
             } catch (Exception $e) {
                 printf("Skip   : %s (%s)\n", $title, $e->getMessage());
@@ -645,12 +684,20 @@ class PosterCli
      * Map a folder name to its TVDB season number, or null when it is not
      * a season folder. Plex/Kodi convention: "Season 1", "Season 02", ...
      * (case-insensitive) and "Specials" — TVDB's season 0. Some libraries
-     * also carry the air year ("Season 3 (2018)"); a parenthesized year
-     * is stripped before matching — the season number stays authoritative.
+     * also carry the air year and more ("Season 3 (2018) [1080p]");
+     * everything from the parenthesized year onwards is dropped before
+     * matching — the season number stays authoritative.
      */
     private function seasonNumber(string $name): ?int
     {
-        $name = trim(preg_replace('/\(\d{4}\)/', '', trim($name)));
+        $name = trim($name);
+        // A parenthesized year ends the meaningful part of the name, the
+        // same rule as splitYear() ("Season 3 (2018) [1080p]" → "Season 3").
+        if (preg_match('/\(\d{4}\)/', $name, $m, PREG_OFFSET_CAPTURE)) {
+            $name = substr($name, 0, $m[0][1]);
+        }
+        $name = trim($name);
+
         if (preg_match('/^season\s*(\d+)$/i', $name, $m)) {
             return (int) $m[1];
         }
@@ -727,18 +774,27 @@ class PosterCli
         $foundFiles = $found['files'];
 
         if ($this->postersFlag) {
-            // The scan root itself may be a single show folder rather than
-            // a library of shows: a show's children are season folders
-            // ("Season N"/"Specials"), not other shows. A flat show has
-            // no subfolders at all — episode files sit directly inside —
-            // so the root's own name is checked against the API.
-            $seasonDirs = array_filter($foundDirs, fn($d) => $this->seasonNumber(basename($d)) !== null);
+            // Single-folder detection. TV: season folders ("Season
+            // N"/"Specials") among the children, or a flat folder of
+            // episode files. Movies: movie files sit directly in the
+            // folder, so ANY files at the root mean "this IS the movie" —
+            // extra subfolders (Subs, Extras, ...) are normal and ignored.
+            $seasonDirs = $this->movieFlag
+                ? []
+                : array_filter($foundDirs, fn($d) => $this->seasonNumber(basename($d)) !== null);
             $rootHasPoster = is_file(rtrim($scanPath, '/\\') . '/poster.jpg')
                           || is_file(rtrim($scanPath, '/\\') . '/poster.png');
-            $isFlatShow = $foundDirs === [] && $foundFiles !== [];
 
-            if ($seasonDirs !== [] || $isFlatShow || ($rootHasPoster && $foundDirs === [])) {
-                printf("Processing the scan root as a single show folder.\n");
+            $isSingleShow = $seasonDirs !== [];
+            if (!$isSingleShow && $foundFiles !== [] && ($this->movieFlag || $foundDirs === [])) {
+                $isSingleShow = true;
+            }
+            if (!$isSingleShow && $rootHasPoster && $foundDirs === []) {
+                $isSingleShow = true;
+            }
+
+            if ($isSingleShow) {
+                printf("Processing the scan root as a single %s folder.\n", $this->movieFlag ? 'movie' : 'show');
                 $this->downloadForFolders([$cleanPath]);
                 return;
             }

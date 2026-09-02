@@ -33,6 +33,9 @@ Poster by id:      php run.php --poster=449146
 Scan a library:    php run.php --scan=/x/SciFi
 Fetch posters:     php run.php --scan=/x/SciFi --posters
 Fetch + seasons:   php run.php --scan=/x/SciFi --posters --seasons
+Movies:            php run.php --title="Interstellar" --movie
+Movies:            php run.php --poster=131079 --movie
+Movies:            php run.php --scan=/x/Movies --posters --movie
 ```
 
 ### Search a series — `--title=`
@@ -49,7 +52,7 @@ Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` fo
 php run.php --poster=449146
 ```
 
-Picks the poster the way the TVDB website does — Poster type, then English series-level posters, then English, then series-level, highest score winning — and saves it to `artwork/`, named `449146-6a0e1f176a889.jpg` (`<seriesId>-<image basename>`).
+Picks the poster the way the TVDB website does — Poster type, then English series-level posters, then English, then series-level, highest score winning — and saves it to `artwork/`, named `449146-6a0e1f176a889.jpg` (`<seriesId>-<image basename>`). The `series-` prefix you see in search results is accepted too (`--poster=series-449146`) but never required.
 
 ### Scan a library — `--scan=`
 
@@ -65,7 +68,7 @@ Lists the folder contents: subdirectories first, then files. Windows (`G:\...`),
 php run.php --scan=/x/SciFi --posters
 ```
 
-For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`.
+For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`. A parenthesized year ends the meaningful part of the folder name, so quality/format suffixes after it (e.g. `Interstellar (2014).DL.4k`) are dropped automatically. In movie mode, any video files at the folder root mark it as the movie itself, so subfolders like `Subs` are ignored.
 
 You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders, or a flat folder with the episode files sitting directly inside, is detected and processed on its own:
 
@@ -80,6 +83,18 @@ php run.php --scan=/x/SciFi --posters --seasons
 ```
 
 After the root poster pass, goes one level deeper per show folder. Folders named `Season N` (or zero-padded `Season NN`) and `Specials` (TVDB's season 0) each get their season's poster, saved to `artwork/` as `<seriesId>-<nn>-<basename>.jpg` (e.g. `101501-01-6116a0eb8f514.jpg`) and copied into the season folder as `poster.<ext>`. Season folders that already have a poster, or seasons with no artwork on TVDB, are skipped.
+
+### Movies — `--movie`
+
+TheTVDB serves movies through the same flow: add `--movie` to a search, an id lookup, or a library scan of movie folders:
+
+```sh
+php run.php --title="Interstellar" --movie
+php run.php --poster=131079 --movie
+php run.php --scan=/x/Movies --posters --movie
+```
+
+Movie ids are plain numbers to the user — the API's `movie-` prefix is handled behind the scenes, though a pasted `movie-131079` from search results is accepted too — artwork comes from the movie's extended record, and movie folders are flat — video files sit directly inside — so the single-folder detection works the same way. `--seasons` does not apply to movies.
 
 ## Output and naming
 
