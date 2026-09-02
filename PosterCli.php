@@ -13,8 +13,8 @@ class PosterCli
     private $titleInput = "";   // --title="Star City"
     private $posterId = "";     // --poster=449146 (series id)
     private $scanPath = "";     // --scan=/path/to/dir
-    private $downloadFlag = false; // --download (with --scan, fetch root posters)
-    private $seasonsFlag = false;  // --seasons (with --scan --download, fetch season posters too)
+    private $postersFlag = false;  // --posters (with --scan, fetch posters for the library's shows)
+    private $seasonsFlag = false;  // --seasons (with --scan --posters, fetch season posters too)
 
     public function __construct($argv) {
         try {
@@ -66,8 +66,8 @@ class PosterCli
                     $i++;
                 }
             }
-            elseif ($arg === '--download') {
-                $this->downloadFlag = true;
+            elseif ($arg === '--posters') {
+                $this->postersFlag = true;
             }
             elseif ($arg === '--seasons') {
                 $this->seasonsFlag = true;
@@ -88,11 +88,11 @@ class PosterCli
         if ($this->posterId !== '' && !ctype_digit($this->posterId)) {
             throw new Exception('Invalid --poster value "' . $this->posterId . '" — expected a numeric series id');
         }
-        if ($this->downloadFlag && empty($this->scanPath)) {
-            throw new Exception('--download can only be used together with --scan');
+        if ($this->postersFlag && empty($this->scanPath)) {
+            throw new Exception('--posters can only be used together with --scan');
         }
-        if ($this->seasonsFlag && !$this->downloadFlag) {
-            throw new Exception('--seasons can only be used together with --scan --download');
+        if ($this->seasonsFlag && !$this->postersFlag) {
+            throw new Exception('--seasons can only be used together with --scan --posters');
         }
     }
 
@@ -433,7 +433,7 @@ class PosterCli
     }
 
     /**
-     * --scan --download mode. For each immediate child directory (a TV show
+     * --scan --posters mode. For each immediate child directory (a TV show
      * folder): skip it if it already has poster.jpg/poster.png; otherwise
      * use the folder name as the series title, find the show, pick its
      * poster (same funnel as --poster), download it to ./artwork/, and copy
@@ -726,7 +726,7 @@ class PosterCli
         $foundDirs  = $found['dirs'];
         $foundFiles = $found['files'];
 
-        if ($this->downloadFlag) {
+        if ($this->postersFlag) {
             // The scan root itself may be a single show folder rather than
             // a library of shows: a show's children are season folders
             // ("Season N"/"Specials"), not other shows. A flat show has
@@ -743,7 +743,7 @@ class PosterCli
                 return;
             }
 
-            // Download mode: only the immediate child directories matter.
+            // Posters mode: only the immediate child directories matter.
             $this->downloadForFolders($foundDirs);
             return;
         }
@@ -769,10 +769,6 @@ class PosterCli
         }
 
         echo $this->renderTable(['#', 'Type', 'Name', 'Path'], $rows);
-
-        if ($this->downloadFlag) {
-            echo "\n--download mode: not implemented yet (placeholder).\n";
-        }
     }
 
     /**

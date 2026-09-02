@@ -31,8 +31,8 @@ Everything goes through the single entry point, `run.php`:
 Search a series:   php run.php --title="Star City"
 Poster by id:      php run.php --poster=449146
 Scan a library:    php run.php --scan=/x/SciFi
-Fetch posters:     php run.php --scan=/x/SciFi --download
-Fetch + seasons:   php run.php --scan=/x/SciFi --download --seasons
+Fetch posters:     php run.php --scan=/x/SciFi --posters
+Fetch + seasons:   php run.php --scan=/x/SciFi --posters --seasons
 ```
 
 ### Search a series — `--title=`
@@ -59,10 +59,10 @@ php run.php --scan=/x/SciFi
 
 Lists the folder contents: subdirectories first, then files. Windows (`G:\...`), unix (`/x/...`), and relative paths are accepted interchangeably.
 
-### Fetch posters for a library — `--download`
+### Fetch posters for a library — `--posters`
 
 ```sh
-php run.php --scan=/x/SciFi --download
+php run.php --scan=/x/SciFi --posters
 ```
 
 For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`.
@@ -72,7 +72,7 @@ You can also point `--scan` directly at a single show folder rather than a libra
 ### Fetch season posters too — `--seasons`
 
 ```sh
-php run.php --scan=/x/SciFi --download --seasons
+php run.php --scan=/x/SciFi --posters --seasons
 ```
 
 After the root poster pass, goes one level deeper per show folder. Folders named `Season N` (or zero-padded `Season NN`) and `Specials` (TVDB's season 0) each get their season's poster, saved to `artwork/` as `<seriesId>-<nn>-<basename>.jpg` (e.g. `101501-01-6116a0eb8f514.jpg`) and copied into the season folder as `poster.<ext>`. Season folders that already have a poster, or seasons with no artwork on TVDB, are skipped.
