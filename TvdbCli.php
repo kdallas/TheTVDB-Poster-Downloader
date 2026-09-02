@@ -1,0 +1,817 @@
+<?php
+
+/**
+ * CLI entry point class for the tvdb-posters tools. Parses $argv, then
+ * runs the requested action: search by --title, or --login to force a
+ * fresh token. Same shape as BatchEncoder: constructor takes $argv,
+ * run() does the work, errors are exceptions caught as "Error: ...".
+ */
+
+class TvdbCli
+{
+    // Inputs
+    private $titleInput = "";   // --title="Star City"
+    private $posterId = "";     // --poster=449146 (series id)
+    private $scanPath = "";     // --scan=/path/to/dir
+    private $downloadFlag = false; // --download (with --scan, fetch root posters)
+    private $seasonsFlag = false;  // --seasons (with --scan --download, fetch season posters too)
+
+    public function __construct($argv) {
+        try {
+            $this->parseArguments($argv);
+            $this->validateInputs();
+        } catch (Exception $e) {
+            echo "Error: " . $e->getMessage() . "\n";
+            exit(1);
+        }
+    }
+
+    public function run() {
+        try {
+            if ($this->scanPath !== '') {
+                $this->scanFolder();
+            } elseif ($this->posterId !== '') {
+                $this->posterLookup();
+            } else {
+                $this->search();
+            }
+        } catch (Exception $e) {
+            echo "Error: " . $e->getMessage() . "\n";
+            exit(1);
+        }
+    }
+
+    private function parseArguments($argv) {
+        for ($i = 1; $i < count($argv); $i++) {
+            $arg = $argv[$i];
+
+            if (str_starts_with($arg, '--title=')) {
+                $this->titleInput = substr($arg, 8);
+                // Stitch spaces if the title was unquoted: --title=Star City
+                for ($j = $i + 1; $j < count($argv); $j++) {
+                    if (str_starts_with($argv[$j], '-')) break;
+                    $this->titleInput .= " " . $argv[$j];
+                    $i++;
+                }
+            }
+            elseif (str_starts_with($arg, '--poster=')) {
+                $this->posterId = substr($arg, 9);
+            }
+            elseif (str_starts_with($arg, '--scan=')) {
+                $this->scanPath = substr($arg, 7);
+                // Stitch spaces if the path was unquoted: --scan=/c/My TV Shows
+                for ($j = $i + 1; $j < count($argv); $j++) {
+                    if (str_starts_with($argv[$j], '-')) break;
+                    $this->scanPath .= " " . $argv[$j];
+                    $i++;
+                }
+            }
+            elseif ($arg === '--download') {
+                $this->downloadFlag = true;
+            }
+            elseif ($arg === '--seasons') {
+                $this->seasonsFlag = true;
+            }
+            else {
+                throw new Exception("Unknown argument: {$arg}");
+            }
+        }
+    }
+
+    private function validateInputs() {
+        if (empty($this->titleInput) && empty($this->posterId) && empty($this->scanPath)) {
+            throw new Exception('Missing --title, --poster, or --scan value.' . "\n" .
+                                'USAGE: php run.php --title="Star City"' . "\n" .
+                                '       php run.php --poster=449146' . "\n" .
+                                '       php run.php --scan=/path/to/dir');
+        }
+        if ($this->posterId !== '' && !ctype_digit($this->posterId)) {
+            throw new Exception('Invalid --poster value "' . $this->posterId . '" — expected a numeric series id');
+        }
+        if ($this->downloadFlag && empty($this->scanPath)) {
+            throw new Exception('--download can only be used together with --scan');
+        }
+        if ($this->seasonsFlag && !$this->downloadFlag) {
+            throw new Exception('--seasons can only be used together with --scan --download');
+        }
+    }
+
+    /**
+     * Split a title that may carry a year in parentheses — the common
+     * folder-name convention "Lazarus (2025)". The parenthesized year is
+     * removed from the search term and returned separately so ranking can
+     * use it. The first parenthesized 4-digit value found is taken as the
+     * year; any others (rare) are stripped too. Returns
+     * ['title' => 'Lazarus', 'year' => 2025]; year is 0 when absent.
+     */
+    private function splitYear(string $input): array
+    {
+        $year = 0;
+        if (preg_match('/\((\d{4})\)/', $input, $m)) {
+            $year = (int) $m[1];
+        }
+        return [
+            'title' => trim(preg_replace('/\(\d{4}\)/', '', $input)),
+            'year'  => $year,
+        ];
+    }
+
+    /**
+     * Rank search results, best match first:
+     *   1. The series' own name IS the term ("Solos")
+     *   2. The own name CONTAINS the term ("Kaleidoscope (2023)")
+     *   3. The English title IS the term (a translation match)
+     *   4. The English title CONTAINS the term
+     *   5. Everything else the search API matched (aliases, overviews, ...)
+     * Titles are compared with parenthesized years stripped, mirroring
+     * splitYear() on the input: "The Librarians (2014)" counts as an
+     * exact match for "The Librarians", so the spin-off "The Librarians:
+     * The Next Chapter" stays in the contains tier.
+     * Within a tier: a parenthesized year hint ("Lazarus (2025)") is
+     * preferred, then newest first by air date; no-date entries sink.
+     * Own-title matches rank above translation matches — searching
+     * "Kaleidoscope" should put the series actually titled
+     * "Kaleidoscope (2023)" above a Vietnamese show whose English
+     * translation happens to be exactly "Kaleidoscope".
+     * PHP 8 sorts are stable, so ties keep the API's original order.
+     */
+    private function rankResults(array $results, string $needle, int $year = 0): array
+    {
+        $needle = mb_strtolower(trim($needle));
+
+        // Tier number for a single result; lower = better.
+        $tier = function (array $r) use ($needle): int {
+            $name = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $r['name'] ?? '')));
+            $en   = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $r['_english'] ?? '')));
+
+            if ($name === $needle) return 1;
+            if ($needle !== '' && str_contains($name, $needle)) return 2;
+            if ($en === $needle) return 3;
+            if ($needle !== '' && str_contains($en, $needle)) return 4;
+            return 5;
+        };
+
+        usort($results, function ($a, $b) use ($tier, $year) {
+            $tierDiff = $tier($a) - $tier($b);
+            if ($tierDiff !== 0) {
+                return $tierDiff;
+            }
+
+            $aYear = (int) substr($a['first_air_time'] ?? '', 0, 4);
+            $bYear = (int) substr($b['first_air_time'] ?? '', 0, 4);
+
+            // Prefer the year the title carried — "Lazarus (2025)" — so
+            // a remake or name-clash from that year wins over the rest.
+            if ($year > 0) {
+                $aYearMatch = $aYear === $year;
+                $bYearMatch = $bYear === $year;
+                if ($aYearMatch !== $bYearMatch) {
+                    return $aYearMatch ? -1 : 1;
+                }
+            }
+
+            return $bYear - $aYear; // newest first
+        });
+
+        return $results;
+    }
+
+    /**
+     * Best-effort English title for a search result. When the series'
+     * primary language is already English the name IS the English title,
+     * so we skip the API call. Otherwise ask for the English translation
+     * record (GET /series/{id}/translations/eng) and use its `name`
+     * field. Returns '' when no English name is available.
+     */
+    private function englishTitle(array $result): string
+    {
+        if (($result['primary_language'] ?? '') === 'eng') {
+            return $result['name'] ?? '';
+        }
+
+        $seriesId = str_replace('series-', '', $result['id'] ?? '');
+        if ($seriesId === '') {
+            return '';
+        }
+
+        [$code, $body] = TvdbApi::get('/series/' . $seriesId . '/translations/eng');
+        if ($code !== 200) {
+            return '';
+        }
+
+        $data = json_decode($body, true);
+        return $data['data']['name'] ?? '';
+    }
+
+    /**
+     * Add each result's English title under the '_english' key (one API
+     * call per non-English-primary result). Called once BEFORE ranking so
+     * the ranker's exact-match tier can see English titles, and the same
+     * values are reused for the search table's Title (EN) column.
+     */
+    private function enrichEnglish(array $results): array
+    {
+        foreach ($results as &$r) {
+            $r['_english'] = $this->englishTitle($r);
+        }
+        unset($r);
+        return $results;
+    }
+
+    private function search() {
+        // A title may carry a year in parentheses ("Lazarus (2025)"):
+        // search without it, but keep the year as a hint for ranking.
+        $parsed = $this->splitYear($this->titleInput);
+        $query  = $parsed['title'];
+        $year   = $parsed['year'];
+
+        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => 'series']);
+        $data = json_decode($response, true);
+
+        if ($httpCode === 401) {
+            throw new Exception('Token rejected even after re-auth (HTTP 401)');
+        }
+        if ($httpCode !== 200) {
+            throw new Exception("Search failed (HTTP {$httpCode}): {$response}");
+        }
+
+        $results = $this->enrichEnglish($data['data'] ?? []);
+        $results = $this->rankResults($results, $query, $year);
+
+        $yearNote = $year > 0 ? ", year {$year}" : '';
+        printf("Search \"%s\" (series%s): %d result(s)\n\n", $query, $yearNote, count($results));
+
+        if ($results === []) {
+            printf("No results.\n");
+            return;
+        }
+
+        $rows = [];
+        foreach ($results as $r) {
+            $english = $r['_english'] ?? '';
+            $rows[] = [
+                $r['id'] ?? '?',
+                $r['name'] ?? '(no name)',
+                $english !== '' ? $english : '—',
+                !empty($r['first_air_time']) ? substr($r['first_air_time'], 0, 10) : '—',
+                !empty($r['network']) ? $r['network'] : '—',
+            ];
+        }
+
+        echo $this->renderTable(['ID', 'Title', 'Title (EN)', 'First aired', 'Network'], $rows);
+    }
+
+    /**
+     * Pick the series poster the way the TVDB website does — the first
+     * Poster-type asset its own API returns — then download it.
+     * Saved to ./artwork/<seriesId>-<basename of image URL>.
+     */
+    private function posterLookup() {
+        $typeMap = $this->fetchArtworkTypes();
+
+        [$httpCode, $response] = TvdbApi::get('/series/' . $this->posterId . '/artworks');
+        $data = json_decode($response, true);
+
+        if ($httpCode === 404) {
+            throw new Exception("Series {$this->posterId} not found");
+        }
+        if ($httpCode !== 200) {
+            throw new Exception("Artwork lookup failed (HTTP {$httpCode}): {$response}");
+        }
+
+        $seriesName = $data['data']['name'] ?? $this->posterId;
+
+        $selection = $this->selectPoster($data['data']['artworks'] ?? [], $typeMap);
+        $winner = $selection['winner'];
+        if ($winner === null) {
+            throw new Exception("No poster artwork found for series {$this->posterId}");
+        }
+
+        printf("Poster lookup for series %s \"%s\":\n", $this->posterId, $seriesName);
+
+        // Show the funnel narrowing: each tier's count, stopping at the
+        // tier that produced the winner.
+        $steps = [$selection['total'] . ' posters'];
+        foreach ([['eng series-level', $selection['engSeries']],
+                  ['eng', $selection['eng']],
+                  ['series-level', $selection['series']]] as [$label, $count]) {
+            $steps[] = $count . ' ' . $label;
+            if ($selection['stage'] === $label) {
+                break;
+            }
+        }
+        $steps[] = 'score ' . ($winner['score'] ?? '—');
+        printf("Selection: %s\n\n", implode(' → ', $steps));
+
+        $rows = [[
+            $typeMap[$winner['type'] ?? 0] ?? 'Poster',
+            $winner['id'] ?? '?',
+            $winner['language'] ?? '—',
+            $winner['score'] ?? '—',
+            (isset($winner['width']) && isset($winner['height'])) ? $winner['width'] . '×' . $winner['height'] : '—',
+            $winner['image'] ?? '—',
+        ]];
+        echo $this->renderTable(['Type', 'Artwork ID', 'Language', 'Score', 'Size (W×H)', 'Image'], $rows);
+
+        // Download to ./artwork/<seriesId>-<basename of image URL>.
+        $url = $winner['image'];
+        $filename = $this->posterId . '-' . basename(parse_url($url, PHP_URL_PATH));
+        $dir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+        $dest = $dir . DIRECTORY_SEPARATOR . $filename;
+
+        TvdbApi::download($url, $dest);
+
+        printf("\nSaved: artwork/%s (%s bytes)\n", $filename, number_format(filesize($dest)));
+    }
+
+    /**
+     * Resolve artwork type ids -> names (e.g. 2 -> "Poster"). Empty map if
+     * the types call fails — selectPoster() then falls back to URL detection.
+     */
+    private function fetchArtworkTypes(): array
+    {
+        [$typesCode, $typesResponse] = TvdbApi::get('/artwork/types');
+        $typesData = json_decode($typesResponse, true);
+        $typeMap = [];
+        if ($typesCode === 200) {
+            foreach (($typesData['data'] ?? []) as $t) {
+                $typeMap[$t['id']] = $t['name'] ?? ('type ' . $t['id']);
+            }
+        }
+        return $typeMap;
+    }
+
+    /**
+     * The poster selection funnel:
+     *   1. Keep Poster type only (URL-pattern fallback without a type map)
+     *   2. Prefer English + series-level posters
+     *   3. Else English posters of any level (English is preferred over
+     *      other languages)
+     *   4. Else series-level posters of any language
+     *   5. Highest score wins
+     * Series-level is judged by the explicit seasonId/episodeId fields —
+     * the API only emits them when the artwork is attached to a season or
+     * episode, so their absence means series-level. Legacy v3-era image
+     * URLs predate the /series/ path layout, so the URL sniff is only a
+     * fallback for responses that carry none of the fields.
+     * Returns the winning artwork (or null when the series has no
+     * poster-type artwork at all) plus the funnel counts for reporting.
+     */
+    private function selectPoster(array $artworks, array $typeMap): array
+    {
+        $posters = array_values(array_filter($artworks, function ($a) use ($typeMap) {
+            if ($typeMap !== []) {
+                return ($typeMap[$a['type'] ?? 0] ?? '') === 'Poster';
+            }
+            return str_contains($a['image'] ?? '', '/posters/');
+        }));
+
+        if ($posters === []) {
+            // No poster-type artwork for this series — callers can use
+            // winner === null to try the next best match instead.
+            return [
+                'winner'    => null,
+                'total'     => 0,
+                'engSeries' => 0,
+                'eng'       => 0,
+                'series'    => 0,
+                'stage'     => 'none',
+            ];
+        }
+
+        $total = count($posters);
+
+        // If the response carries the attachment fields anywhere, trust
+        // them (absent = zero = series-level); otherwise fall back to the
+        // v4 URL layout for older responses.
+        $hasAttachmentFields = false;
+        foreach ($posters as $p) {
+            if (array_key_exists('seasonId', $p) || array_key_exists('episodeId', $p)) {
+                $hasAttachmentFields = true;
+                break;
+            }
+        }
+        if ($hasAttachmentFields) {
+            $isSeriesLevel = fn(array $a) => empty($a['seasonId']) && empty($a['episodeId']);
+        } else {
+            $isSeriesLevel = fn(array $a) => str_contains($a['image'] ?? '', '/series/');
+        }
+        $isEng = fn(array $a) => strtolower($a['language'] ?? '') === 'eng';
+
+        // Tiered candidates: English series-level first, then any
+        // English, then series-level in any language.
+        $engSeries = array_values(array_filter($posters, fn($a) => $isEng($a) && $isSeriesLevel($a)));
+        $engAll    = array_values(array_filter($posters, $isEng));
+        $seriesAll = array_values(array_filter($posters, $isSeriesLevel));
+
+        $candidates = $posters;
+        $stage = 'any poster';
+        if ($engSeries !== []) {
+            $candidates = $engSeries;
+            $stage = 'eng series-level';
+        } elseif ($engAll !== []) {
+            $candidates = $engAll;
+            $stage = 'eng';
+        } elseif ($seriesAll !== []) {
+            $candidates = $seriesAll;
+            $stage = 'series-level';
+        }
+
+        usort($candidates, fn($a, $b) => ($b['score'] ?? 0) <=> ($a['score'] ?? 0));
+
+        return [
+            'winner'    => $candidates[0],
+            'total'     => $total,   // posters before narrowing
+            'engSeries' => count($engSeries),
+            'eng'       => count($engAll),
+            'series'    => count($seriesAll),
+            'stage'     => $stage,
+        ];
+    }
+
+    /**
+     * --scan --download mode. For each immediate child directory (a TV show
+     * folder): skip it if it already has poster.jpg/poster.png; otherwise
+     * use the folder name as the series title, find the show, pick its
+     * poster (same funnel as --poster), download it to ./artwork/, and copy
+     * it into the show folder as poster.<ext> (a jpg source → poster.jpg).
+     * With --seasons, a second pass then fetches posters for the folder's
+     * "Season N"/"Specials" subfolders (downloadSeasonPosters()).
+     * Per-folder problems print "Skip :" and move on to the next folder.
+     */
+    private function downloadForFolders(array $dirs) {
+        // Fetch the artwork type map once for the whole run.
+        $typeMap = $this->fetchArtworkTypes();
+
+        foreach ($dirs as $dir) {
+            $title = basename($dir);
+            $cleanDir = rtrim($dir, '/');
+
+            // Folder names may carry a year ("Lazarus (2025)"): search
+            // without it, keep the year as a hint for ranking.
+            $parsed = $this->splitYear($title);
+            $query  = $parsed['title'];
+            $year   = $parsed['year'];
+
+            try {
+                $hasPoster = is_file($cleanDir . '/poster.jpg') || is_file($cleanDir . '/poster.png');
+
+                // A folder that has its root poster is done... unless
+                // --seasons is on, in which case we still need the series
+                // id for the season pass, so the search below still runs.
+                if ($hasPoster) {
+                    printf("Skip   : %s (poster already exists)\n", $title);
+                    if (!$this->seasonsFlag) {
+                        continue;
+                    }
+                }
+
+                // Folder name (minus any parenthesized year) = series title.
+                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => 'series']);
+                $data = json_decode($response, true);
+                if ($httpCode !== 200) {
+                    throw new Exception("search failed (HTTP {$httpCode})");
+                }
+
+                $results = $this->enrichEnglish($data['data'] ?? []);
+                $results = $this->rankResults($results, $query, $year);
+                if ($results === []) {
+                    printf("Skip   : %s (no series found)\n", $title);
+                    continue;
+                }
+
+                // Walk the ranked results until one of them has a poster:
+                // some top matches (an exact-name hit on an unrelated
+                // series) have no artwork at all, in which case the next
+                // best match is the one the user actually wants. The
+                // attempt number goes on the Done line as "[2nd]" etc.
+                $winner = null;
+                $seriesId = null;
+                $attempt = 0;
+                if (!$hasPoster) {
+                    foreach ($results as $r) {
+                        $candidateId = str_replace('series-', '', $r['id']);
+                        $attempt++;
+
+                        [$httpCode, $response] = TvdbApi::get('/series/' . $candidateId . '/artworks');
+                        $data = json_decode($response, true);
+                        if ($httpCode !== 200) {
+                            throw new Exception("artwork lookup failed (HTTP {$httpCode})");
+                        }
+                        $winner = $this->selectPoster($data['data']['artworks'] ?? [], $typeMap)['winner'];
+                        if ($winner !== null) {
+                            $seriesId = $candidateId;
+                            break;
+                        }
+                    }
+                    if ($winner === null) {
+                        throw new Exception("no poster artwork found for any match (tried {$attempt})");
+                    }
+                } else {
+                    // Root poster exists; with --seasons the season pass
+                    // just uses the top-ranked match.
+                    $seriesId = str_replace('series-', '', $results[0]['id']);
+                }
+
+                // Root poster (skipped when one already exists).
+                if (!$hasPoster) {
+                    // Download into ./artwork/ (same naming as --poster).
+                    $url = $winner['image'];
+                    $filename = $seriesId . '-' . basename(parse_url($url, PHP_URL_PATH));
+                    $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+                    if (!is_dir($artworkDir)) {
+                        mkdir($artworkDir, 0777, true);
+                    }
+                    $dest = $artworkDir . DIRECTORY_SEPARATOR . $filename;
+                    TvdbApi::download($url, $dest);
+
+                    // Copy into the show folder as poster.<ext>.
+                    $ext = pathinfo($dest, PATHINFO_EXTENSION);
+                    $target = $cleanDir . DIRECTORY_SEPARATOR . 'poster.' . $ext;
+                    if (!copy($dest, $target)) {
+                        throw new Exception("could not copy poster into {$target}");
+                    }
+
+                    // Note the attempt when a later match supplied the poster.
+                    $nth = $attempt > 1 ? ' [' . $this->ordinal($attempt) . ']' : '';
+                    printf("Done   : %s → %s (series-%s)%s\n", $title, Paths::sanitizePath($target, false), $seriesId, $nth);
+                }
+
+                // --seasons: go one nested level deeper for season posters.
+                if ($this->seasonsFlag) {
+                    $this->downloadSeasonPosters($cleanDir, $title, $seriesId);
+                }
+            } catch (Exception $e) {
+                printf("Skip   : %s (%s)\n", $title, $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * --seasons pass, run after the root poster: scan the show folder one
+     * level deeper for "Season N" folders (Plex/Kodi style, "01" = 1) and
+     * "Specials" (TVDB's season 0). Each season folder gets the poster
+     * from the matching season record's `image` field (one
+     * /series/{id}/extended call), saved to
+     * artwork/<seriesId>-<nn>-<basename> — e.g. 101501-01-6116a0eb8f514.jpg
+     * — and copied into the season folder as poster.<ext>.
+     * Per-season problems print "Skip :" and move on.
+     */
+    private function downloadSeasonPosters(string $cleanDir, string $title, string $seriesId)
+    {
+        // Which immediate children are season folders?
+        $found = ScanDir::scan($cleanDir, false, false, true);
+        $seasonDirs = [];
+        foreach (($found['dirs'] ?? []) as $child) {
+            $number = $this->seasonNumber(basename($child));
+            if ($number !== null) {
+                $seasonDirs[] = ['path' => $child, 'name' => basename($child), 'number' => $number];
+            }
+        }
+        if ($seasonDirs === []) {
+            return;
+        }
+
+        // One extended call gives every season's poster URL at once.
+        [$code, $body] = TvdbApi::get('/series/' . $seriesId . '/extended');
+        if ($code !== 200) {
+            printf("Skip   : %s (season lookup failed, HTTP %d)\n", $title, $code);
+            return;
+        }
+        $data = json_decode($body, true);
+        $seasons = $data['data']['seasons'] ?? [];
+        $defaultTypeId = isset($data['data']['defaultSeasonType']) ? (int) $data['data']['defaultSeasonType'] : null;
+
+        foreach ($seasonDirs as $seasonDir) {
+            try {
+                $seasonPath = rtrim($seasonDir['path'], '/\\');
+                if (is_file($seasonPath . '/poster.jpg') || is_file($seasonPath . '/poster.png')) {
+                    printf("Skip   : %s/%s (poster already exists)\n", $title, $seasonDir['name']);
+                    continue;
+                }
+
+                $season = $this->findSeason($seasons, $defaultTypeId, $seasonDir['number']);
+                if ($season === null || empty($season['image'])) {
+                    printf("Skip   : %s/%s (no season artwork on TVDB)\n", $title, $seasonDir['name']);
+                    continue;
+                }
+
+                // artwork/<seriesId>-<nn>-<basename>; nn is zero-padded
+                // ("01", and "00" for Specials = TVDB season 0).
+                $url = $season['image'];
+                $nn = str_pad((string) $seasonDir['number'], 2, '0', STR_PAD_LEFT);
+                $filename = $seriesId . '-' . $nn . '-' . basename(parse_url($url, PHP_URL_PATH));
+                $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+                if (!is_dir($artworkDir)) {
+                    mkdir($artworkDir, 0777, true);
+                }
+                $dest = $artworkDir . DIRECTORY_SEPARATOR . $filename;
+                TvdbApi::download($url, $dest);
+
+                // Copy into the season folder as poster.<ext>.
+                $ext = pathinfo($dest, PATHINFO_EXTENSION);
+                $target = $seasonPath . DIRECTORY_SEPARATOR . 'poster.' . $ext;
+                if (!copy($dest, $target)) {
+                    throw new Exception("could not copy poster into {$target}");
+                }
+
+                printf("Done   : %s/%s → %s (season %d)\n",
+                    $title, $seasonDir['name'], Paths::sanitizePath($target, false), $seasonDir['number']);
+            } catch (Exception $e) {
+                printf("Skip   : %s/%s (%s)\n", $title, $seasonDir['name'], $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Map a folder name to its TVDB season number, or null when it is not
+     * a season folder. Plex/Kodi convention: "Season 1", "Season 02", ...
+     * (case-insensitive) and "Specials" — TVDB's season 0. Some libraries
+     * also carry the air year ("Season 3 (2018)"); a parenthesized year
+     * is stripped before matching — the season number stays authoritative.
+     */
+    private function seasonNumber(string $name): ?int
+    {
+        $name = trim(preg_replace('/\(\d{4}\)/', '', trim($name)));
+        if (preg_match('/^season\s*(\d+)$/i', $name, $m)) {
+            return (int) $m[1];
+        }
+        if (strcasecmp($name, 'specials') === 0) {
+            return 0;
+        }
+        return null;
+    }
+
+    /**
+     * Find the season record for a folder's season number. TVDB keeps
+     * several season types per series (Aired/DVD/Absolute orders) that can
+     * reuse the same numbers, so prefer the series' default season type
+     * when the API declares one. Returns null when the season is unknown.
+     */
+    private function findSeason(array $seasons, ?int $defaultTypeId, int $number): ?array
+    {
+        if ($defaultTypeId !== null) {
+            foreach ($seasons as $s) {
+                if (isset($s['number']) && (int) $s['number'] === $number
+                    && (int) ($s['type']['id'] ?? -1) === $defaultTypeId) {
+                    return $s;
+                }
+            }
+        }
+        foreach ($seasons as $s) {
+            if (isset($s['number']) && (int) $s['number'] === $number) {
+                return $s;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 1 → "1st", 2 → "2nd", 3 → "3rd", 11 → "11th", ... Used for the
+     * "[2nd]" note when a later-ranked match supplied the poster.
+     */
+    private function ordinal(int $n): string
+    {
+        $n = abs($n);
+        if ($n % 100 >= 11 && $n % 100 <= 13) {
+            return $n . 'th';
+        }
+        return match ($n % 10) {
+            1 => $n . 'st',
+            2 => $n . 'nd',
+            3 => $n . 'rd',
+            default => $n . 'th',
+        };
+    }
+
+    /**
+     * Scan a directory supplied via --scan, accepting unix and windows
+     * style paths interchangeably (the Paths class mirrors BatchEncoder's
+     * sanitizePath/toWinPath pair).
+     */
+    private function scanFolder() {
+        // Normalize whatever the user typed into a forward-slash path.
+        $cleanPath = Paths::sanitizePath($this->scanPath);
+
+        // Robust existence check: try Unix path first, then Windows path.
+        $existsDir = is_dir($cleanPath) || is_dir(Paths::toWinPath($cleanPath));
+        if (!$existsDir) {
+            throw new Exception("Directory not found: {$cleanPath}");
+        }
+
+        // ScanDir gets a Windows-style path, like BatchEncoder passes.
+        $scanPath = Paths::toWinPath(rtrim($cleanPath, ' /\\'));
+        echo "Scanning: {$scanPath}\n";
+
+        // Ask ScanDir for directories as well as files.
+        $found = ScanDir::scan($scanPath, false, false, true);
+
+        // ScanDir might return mixed slashes depending on OS; unify them
+        // back to forward slashes for safety.
+        $foundDirs  = array_map(fn($p) => Paths::sanitizePath($p, false), $found['dirs']);
+        $foundFiles = array_map(fn($p) => Paths::sanitizePath($p, false), $found['files']);
+
+        if ($this->downloadFlag) {
+            // The scan root itself may be a single show folder rather than
+            // a library of shows: a show's children are season folders
+            // ("Season N"/"Specials"), not other shows. A flat show has
+            // no subfolders at all — episode files sit directly inside —
+            // so the root's own name is checked against the API.
+            $seasonDirs = array_filter($foundDirs, fn($d) => $this->seasonNumber(basename($d)) !== null);
+            $rootHasPoster = is_file(rtrim($scanPath, '/\\') . '/poster.jpg')
+                          || is_file(rtrim($scanPath, '/\\') . '/poster.png');
+            $isFlatShow = $foundDirs === [] && $foundFiles !== [];
+
+            if ($seasonDirs !== [] || $isFlatShow || ($rootHasPoster && $foundDirs === [])) {
+                printf("Processing the scan root as a single show folder.\n");
+                $this->downloadForFolders([$cleanPath]);
+                return;
+            }
+
+            // Download mode: only the immediate child directories matter.
+            $this->downloadForFolders($foundDirs);
+            return;
+        }
+
+        $nDirs = count($foundDirs);
+        $nFiles = count($foundFiles);
+        printf("\nFound %d %s and %d %s:\n\n",
+            $nDirs, $nDirs === 1 ? 'directory' : 'directories',
+            $nFiles, $nFiles === 1 ? 'file' : 'files');
+
+        if ($foundDirs === [] && $foundFiles === []) {
+            return;
+        }
+
+        // Directories first (e.g. TV show folders), then files.
+        $rows = [];
+        $n = 1;
+        foreach ($foundDirs as $dir) {
+            $rows[] = [$n++, 'Dir', basename($dir), $dir];
+        }
+        foreach ($foundFiles as $file) {
+            $rows[] = [$n++, 'File', basename($file), $file];
+        }
+
+        echo $this->renderTable(['#', 'Type', 'Name', 'Path'], $rows);
+
+        if ($this->downloadFlag) {
+            echo "\n--download mode: not implemented yet (placeholder).\n";
+        }
+    }
+
+    /**
+     * Render an ASCII table with box-drawing borders. Header cells are
+     * centered, data cells are left-aligned. Column widths grow to fit the
+     * widest cell. Display width (mb_strwidth) is used for padding so wide
+     * characters (CJK, Thai, ...) line up correctly in the terminal.
+     */
+    private function renderTable(array $headers, array $rows): string
+    {
+        $widths = [];
+        foreach ($headers as $i => $h) {
+            $widths[$i] = mb_strwidth($h);
+        }
+        foreach ($rows as $row) {
+            foreach ($row as $i => $cell) {
+                $widths[$i] = max($widths[$i], mb_strwidth((string) $cell));
+            }
+        }
+
+        // Each border segment covers: 1 pad space + cell + 1 pad space.
+        $border = function (string $left, string $mid, string $right) use ($widths): string {
+            return $left . implode($mid, array_map(
+                fn($w) => str_repeat('─', $w + 2),
+                $widths
+            )) . $right;
+        };
+
+        $line = function (array $cells, bool $center) use ($widths): string {
+            $parts = [];
+            foreach ($cells as $i => $cell) {
+                $pad = $widths[$i] - mb_strwidth((string) $cell);
+                if ($center) {
+                    $left = intdiv($pad, 2);
+                    $parts[] = str_repeat(' ', $left + 1) . $cell . str_repeat(' ', $pad - $left + 1);
+                } else {
+                    $parts[] = ' ' . $cell . str_repeat(' ', $pad + 1);
+                }
+            }
+            return '│' . implode('│', $parts) . '│';
+        };
+
+        $out = [];
+        $out[] = $border('┌', '┬', '┐');
+        $out[] = $line($headers, true);
+        $out[] = $border('├', '┼', '┤');
+        foreach ($rows as $row) {
+            $out[] = $line($row, false);
+        }
+        $out[] = $border('└', '┴', '┘');
+
+        return implode("\n", $out) . "\n";
+    }
+}
