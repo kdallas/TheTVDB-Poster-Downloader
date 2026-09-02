@@ -114,7 +114,7 @@ class PosterCli
     /**
      * Split a title that may carry a year — the common folder-name
      * conventions "Lazarus (2025)" and release-style "The.Runner.2026.
-     * 1080p.WEBRip". The year (parenthesized, or a bare dot/space
+     * 1080p.". The year (parenthesized, or a bare dot/space
      * separated token in 1900-2099) is kept as a ranking hint and marks
      * the end of the meaningful title: everything from it onwards is
      * dropped, and dots are treated as word separators. Returns
