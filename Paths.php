@@ -53,4 +53,34 @@ class Paths
     public static function toWinPath($path) {
         return str_replace('/', '\\', $path);
     }
+
+    /**
+     * Non-recursive directory scan, replacing the ScanDir class (this
+     * project never used its extension filter or recursion). Returns
+     * ['files' => [...], 'dirs' => [...]] with forward-slash paths —
+     * directory paths keep the trailing slash from sanitizePath().
+     */
+    public static function scan($path): array {
+        $files = [];
+        $dirs  = [];
+
+        $entries = scandir($path);
+        if ($entries === false) {
+            return ['files' => $files, 'dirs' => $dirs];
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $full = self::sanitizePath($path . '/' . $entry);
+            if (is_file($full)) {
+                $files[] = $full;
+            } elseif (is_dir($full)) {
+                $dirs[] = $full;
+            }
+        }
+
+        return ['files' => $files, 'dirs' => $dirs];
+    }
 }

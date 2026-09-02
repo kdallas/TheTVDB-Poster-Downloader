@@ -588,7 +588,7 @@ class PosterCli
     private function downloadSeasonPosters(string $cleanDir, string $title, string $seriesId)
     {
         // Which immediate children are season folders?
-        $found = ScanDir::scan($cleanDir, false, false, true);
+        $found = Paths::scan($cleanDir);
         $seasonDirs = [];
         foreach (($found['dirs'] ?? []) as $child) {
             $number = $this->seasonNumber(basename($child));
@@ -717,17 +717,14 @@ class PosterCli
             throw new Exception("Directory not found: {$cleanPath}");
         }
 
-        // ScanDir gets a Windows-style path, like BatchEncoder passes.
+        // Paths::scan() gets a Windows-style path, like BatchEncoder passes.
         $scanPath = Paths::toWinPath(rtrim($cleanPath, ' /\\'));
         echo "Scanning: {$scanPath}\n";
 
-        // Ask ScanDir for directories as well as files.
-        $found = ScanDir::scan($scanPath, false, false, true);
-
-        // ScanDir might return mixed slashes depending on OS; unify them
-        // back to forward slashes for safety.
-        $foundDirs  = array_map(fn($p) => Paths::sanitizePath($p, false), $found['dirs']);
-        $foundFiles = array_map(fn($p) => Paths::sanitizePath($p, false), $found['files']);
+        // Paths::scan() returns forward-slash paths for both halves.
+        $found = Paths::scan($scanPath);
+        $foundDirs  = $found['dirs'];
+        $foundFiles = $found['files'];
 
         if ($this->downloadFlag) {
             // The scan root itself may be a single show folder rather than
