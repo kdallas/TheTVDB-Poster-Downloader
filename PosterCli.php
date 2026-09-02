@@ -173,12 +173,21 @@ class PosterCli
      */
     private function rankResults(array $results, string $needle, int $year = 0): array
     {
-        $needle = mb_strtolower(trim($needle));
+        // Canonical comparison form: lowercase, parenthesized years
+        // stripped, and any punctuation runs collapsed to a single space
+        // — "Face/Off" and "Face-Off" both compare equal to "Face Off".
+        // Letters/numbers of any script survive (CJK titles intact).
+        $canonical = function (string $s): string {
+            $s = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $s)));
+            $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s);
+            return trim(preg_replace('/\s+/u', ' ', $s));
+        };
+        $needle = $canonical($needle);
 
         // Tier number for a single result; lower = better.
-        $tier = function (array $r) use ($needle): int {
-            $name = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $r['name'] ?? '')));
-            $en   = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $r['_english'] ?? '')));
+        $tier = function (array $r) use ($needle, $canonical): int {
+            $name = $canonical($r['name'] ?? '');
+            $en   = $canonical($r['_english'] ?? '');
 
             if ($name === $needle) return 1;
             if ($needle !== '' && str_contains($name, $needle)) return 2;
@@ -548,6 +557,7 @@ class PosterCli
                 // attempt number goes on the Done line as "[2nd]" etc.
                 $winner = null;
                 $mediaId = null;
+                $matchedRow = null;
                 $attempt = 0;
                 if (!$hasPoster) {
                     foreach ($results as $r) {
@@ -563,6 +573,7 @@ class PosterCli
                         $winner = $this->selectPoster($data['data']['artworks'] ?? [], $typeMap)['winner'];
                         if ($winner !== null) {
                             $mediaId = $candidateId;
+                            $matchedRow = $r;
                             break;
                         }
                     }
@@ -593,7 +604,7 @@ class PosterCli
                     // --clean: personal tidy-up, only after a successful
                     // poster download + copy.
                     if ($this->cleanFlag) {
-                        $this->cleanFolder($cleanDir, $target);
+                        $this->cleanFolder($cleanDir, $target, $matchedRow, $year);
                     }
                 }
 
@@ -647,12 +658,19 @@ class PosterCli
      * (personal tidy-up, printed as "Clean :" lines):
      *   1. delete *.nfo and *.txt files (release-scene text files)
      *   2. strip the release tags listed in RELEASE_TAGS (.env, comma
-     *      separated, e.g. "-PSA,-XYZ") from the end of *.mkv/*.mp4
+     *      separated, e.g. "PSA,XYZ" — bare names, the script prepends
+     *      the hyphen when checking) from the end of *.mkv/*.mp4
      *      filename bases
      *   3. save a copy of the poster next to the (first) video file,
      *      named <video name>-poster.<ext>
+     *   4. rename the folder from the API title and year:
+     *      "My Movie  (2026)" (two spaces before the year, colon →
+     *      semicolon, other Windows-illegal characters stripped and
+     *      logged), then a size tag (GiB: >8.2 "DL+", >4.5 "DL",
+     *      >2 "SL", else "SLite") and, when the filename contains
+     *      "2160p", ".4k" — e.g. "My Movie  (2026).SL.4k"
      */
-    private function cleanFolder(string $folder, string $posterPath)
+    private function cleanFolder(string $folder, string $posterPath, ?array $matchedRow, int $folderYearHint)
     {
         // 1. Release-scene text files.
         $textFiles = array_merge(
@@ -672,23 +690,28 @@ class PosterCli
             glob($folder . DIRECTORY_SEPARATOR . '*.mp4') ?: []
         );
         $posterBase = ''; // first video's (cleaned) base, for step 3
+        $firstVideo = ''; // first video's final path, for step 4
         foreach ($videos as $i => $video) {
             $base = pathinfo($video, PATHINFO_FILENAME);
             $ext  = pathinfo($video, PATHINFO_EXTENSION);
             $newBase = $base;
             foreach ($tags as $tag) {
-                if ($tag !== '' && str_ends_with($newBase, $tag)) {
-                    $newBase = substr($newBase, 0, -strlen($tag));
+                $suffix = '-' . $tag; // tags are stored without the hyphen
+                if ($tag !== '' && str_ends_with($newBase, $suffix)) {
+                    $newBase = substr($newBase, 0, -strlen($suffix));
                 }
             }
+            $finalPath = $video;
             if ($newBase !== $base) {
                 $newPath = $folder . DIRECTORY_SEPARATOR . $newBase . '.' . $ext;
                 if (rename($video, $newPath)) {
                     printf("Clean : renamed %s → %s\n", basename($video), basename($newPath));
+                    $finalPath = $newPath;
                 }
             }
             if ($i === 0) {
                 $posterBase = $newBase;
+                $firstVideo = $finalPath;
             }
         }
 
@@ -700,6 +723,59 @@ class PosterCli
                 printf("Clean : saved %s\n", basename($copyPath));
             }
         }
+
+        // 4. Rebuild the folder name from the API data: "My Movie
+        // (2026)" (two spaces before the year, colon → semicolon), then
+        // the size tag and, when the filename says 2160p, ".4k".
+        if ($firstVideo !== '' && $matchedRow !== null) {
+            $apiName = $matchedRow['name'] ?? '';
+            $apiYear = (int) (substr($matchedRow['first_air_time'] ?? '', 0, 4) ?: ($matchedRow['year'] ?? 0));
+            if ($apiYear === 0) {
+                $apiYear = $folderYearHint; // folder-name year as a fallback
+            }
+            if ($apiName !== '' && $apiYear > 0) {
+                $titlePart = str_replace(':', ';', trim($apiName));
+                $titlePart = str_replace('/', '-', $titlePart); // "/" reads better as a hyphen
+                // Windows forbids ? * / \ " < > | in names — strip them
+                // (and log the encounter) rather than failing the rename.
+                $sanitized = preg_replace('/[?*\/\\\\"<>|]/', '', $titlePart);
+                if ($sanitized !== $titlePart) {
+                    printf("Clean : stripped illegal characters from title \"%s\"\n", $titlePart);
+                }
+
+                $newName = $sanitized . '  (' . $apiYear . ')';
+                $newName .= '.' . $this->sizeTag($firstVideo);
+                if (stripos(basename($firstVideo), '2160p') !== false) {
+                    $newName .= '.4k';
+                }
+
+                if ($sanitized !== '' && $newName !== basename($folder)) {
+                    $parent = dirname($folder);
+                    if (rename($folder, $parent . DIRECTORY_SEPARATOR . $newName)) {
+                        printf("Clean : renamed folder → %s\n", $newName);
+                    } else {
+                        printf("Clean : could not rename folder to %s\n", $newName);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Quality tag from the movie file size, measured in gibibytes
+     * (1 GiB = 1024^3 bytes):
+     *   > 8.2 GiB  "DL+"
+     *   > 4.5 GiB  "DL"
+     *   > 2 GiB    "SL"
+     *   ≤ 2 GiB    "SLite"
+     */
+    private function sizeTag(string $videoPath): string
+    {
+        $gib = filesize($videoPath) / (1024 ** 3);
+        if ($gib > 8.2) return 'DL+';
+        if ($gib > 4.5) return 'DL';
+        if ($gib > 2)   return 'SL';
+        return 'SLite';
     }
 
     /**

@@ -102,7 +102,7 @@ Movie ids are plain numbers to the user — the API's `movie-` prefix is handled
 php run.php --scan=/x/Movies --posters --clean
 ```
 
-A personal clean-up pass, run after each successful poster download: deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=-PSA,-XYZ` in `.env`) from video filename suffixes, and saves a `<video name>-poster.jpg` copy of the poster.
+A personal clean-up pass, run after each successful poster download: deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=PSA,XYZ` in `.env` — bare names, the hyphen is added by the script) from video filename suffixes, saves a `<video name>-poster.jpg` copy of the poster, and renames the folder to `Title  (Year)` with a size tag (`DL+`/`DL`/`SL`/`SLite` by GiB size) and `.4k` for 2160p files — e.g. `The Runner  (2026).DL.4k`.
 
 ## Output and naming
 
