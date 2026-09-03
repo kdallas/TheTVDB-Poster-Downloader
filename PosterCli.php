@@ -491,15 +491,43 @@ class PosterCli
     }
 
     /**
+     * Search the API for a cleaned folder title and return the ranked
+     * results (throws when the API call itself fails). Shared by the
+     * --posters and --clean flows.
+     */
+    private function searchTitle(string $query, int $year): array
+    {
+        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $this->movieFlag ? 'movie' : 'series']);
+        $data = json_decode($response, true);
+        if ($httpCode !== 200) {
+            throw new Exception("search failed (HTTP {$httpCode})");
+        }
+        $results = $this->enrichEnglish($data['data'] ?? []);
+        return $this->rankResults($results, $query, $year);
+    }
+
+    /**
+     * The folder's existing poster (poster.jpg preferred over
+     * poster.png), or '' when there is none.
+     */
+    private function existingPoster(string $dir): string
+    {
+        if (is_file($dir . '/poster.jpg')) return $dir . '/poster.jpg';
+        if (is_file($dir . '/poster.png')) return $dir . '/poster.png';
+        return '';
+    }
+
+    /**
      * --scan --posters mode. For each immediate child directory (a TV show
-     * folder — or a movie folder with --movie):
-     * folder): skip it if it already has poster.jpg/poster.png; otherwise
-     * use the folder name as the series title, find the show, pick its
-     * poster (same funnel as --poster), download it to ./artwork/, and copy
-     * it into the show folder as poster.<ext> (a jpg source → poster.jpg).
-     * With --seasons, a second pass then fetches posters for the folder's
-     * "Season N"/"Specials" subfolders (downloadSeasonPosters()).
-     * Per-folder problems print "Skip :" and move on to the next folder.
+     * folder — or a movie folder with --movie): skip it if it already has
+     * poster.jpg/poster.png; otherwise use the folder name as the title,
+     * find the show, pick its poster (same funnel as --poster), download
+     * it to ./artwork/, and copy it into the folder as poster.<ext> (a
+     * jpg source → poster.jpg). With --seasons, a second pass then
+     * fetches posters for the folder's "Season N"/"Specials" subfolders
+     * (downloadSeasonPosters()); with --clean the tidy-up pass runs after
+     * a successful download (cleanFolder()). Per-folder problems print
+     * "Skip :" and move on to the next folder.
      */
     private function downloadForFolders(array $dirs) {
         // Fetch the artwork type map once for the whole run.
@@ -523,7 +551,7 @@ class PosterCli
             $year   = $parsed['year'];
 
             try {
-                $hasPoster = is_file($cleanDir . '/poster.jpg') || is_file($cleanDir . '/poster.png');
+                $hasPoster = $this->existingPoster($cleanDir) !== '';
 
                 // A folder that has its root poster is done... unless
                 // --seasons is on, in which case we still need the series
@@ -537,14 +565,7 @@ class PosterCli
 
                 // Folder name (minus any parenthesized year and trailing
                 // junk) = title.
-                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $type]);
-                $data = json_decode($response, true);
-                if ($httpCode !== 200) {
-                    throw new Exception("search failed (HTTP {$httpCode})");
-                }
-
-                $results = $this->enrichEnglish($data['data'] ?? []);
-                $results = $this->rankResults($results, $query, $year);
+                $results = $this->searchTitle($query, $year);
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
@@ -672,22 +693,14 @@ class PosterCli
             try {
                 // The top match supplies the API title + year for the
                 // rename step.
-                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $this->movieFlag ? 'movie' : 'series']);
-                $data = json_decode($response, true);
-                if ($httpCode !== 200) {
-                    throw new Exception("search failed (HTTP {$httpCode})");
-                }
-
-                $results = $this->enrichEnglish($data['data'] ?? []);
-                $results = $this->rankResults($results, $query, $year);
+                $results = $this->searchTitle($query, $year);
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
                 }
 
                 // Poster copy source: the folder's existing poster, if any.
-                $poster = is_file($cleanDir . '/poster.jpg') ? $cleanDir . '/poster.jpg'
-                        : (is_file($cleanDir . '/poster.png') ? $cleanDir . '/poster.png' : '');
+                $poster = $this->existingPoster($cleanDir);
 
                 $this->cleanFolder($cleanDir, $poster, $results[0], $year);
             } catch (Exception $e) {
