@@ -113,8 +113,8 @@ class PosterCli
         if ($this->movieFlag && $this->seasonsFlag) {
             throw new Exception('--seasons cannot be used together with --movie');
         }
-        if ($this->cleanFlag && !$this->postersFlag) {
-            throw new Exception('--clean can only be used together with --scan --posters');
+        if ($this->cleanFlag && empty($this->scanPath)) {
+            throw new Exception('--clean can only be used together with --scan');
         }
     }
 
@@ -654,6 +654,49 @@ class PosterCli
     }
 
     /**
+     * --scan --clean mode without --posters: run the tidy-up pass over
+     * each folder directly — no downloads. The -poster copy uses the
+     * folder's existing poster (when there is one), and the rename step
+     * uses the top search match's title and year.
+     */
+    private function cleanFolders(array $dirs)
+    {
+        foreach ($dirs as $dir) {
+            $title = basename($dir);
+            $cleanDir = rtrim($dir, '/');
+
+            $parsed = $this->splitYear($title);
+            $query  = $parsed['title'];
+            $year   = $parsed['year'];
+
+            try {
+                // The top match supplies the API title + year for the
+                // rename step.
+                [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $this->movieFlag ? 'movie' : 'series']);
+                $data = json_decode($response, true);
+                if ($httpCode !== 200) {
+                    throw new Exception("search failed (HTTP {$httpCode})");
+                }
+
+                $results = $this->enrichEnglish($data['data'] ?? []);
+                $results = $this->rankResults($results, $query, $year);
+                if ($results === []) {
+                    printf("Skip   : %s (no match found)\n", $title);
+                    continue;
+                }
+
+                // Poster copy source: the folder's existing poster, if any.
+                $poster = is_file($cleanDir . '/poster.jpg') ? $cleanDir . '/poster.jpg'
+                        : (is_file($cleanDir . '/poster.png') ? $cleanDir . '/poster.png' : '');
+
+                $this->cleanFolder($cleanDir, $poster, $results[0], $year);
+            } catch (Exception $e) {
+                printf("Skip   : %s (%s)\n", $title, $e->getMessage());
+            }
+        }
+    }
+
+    /**
      * --clean pass, run only after a successful poster download + copy
      * (personal tidy-up, printed as "Clean :" lines):
      *   1. delete *.nfo and *.txt files (release-scene text files)
@@ -715,8 +758,9 @@ class PosterCli
             }
         }
 
-        // 3. Poster copy named after the movie file.
-        if ($posterBase !== '') {
+        // 3. Poster copy named after the movie file (only when there is
+        // a poster to copy — --clean alone may find none).
+        if ($posterBase !== '' && $posterPath !== '') {
             $posterExt = pathinfo($posterPath, PATHINFO_EXTENSION);
             $copyPath = $folder . DIRECTORY_SEPARATOR . $posterBase . '-poster.' . $posterExt;
             if (copy($posterPath, $copyPath)) {
@@ -937,7 +981,7 @@ class PosterCli
         $foundDirs  = $found['dirs'];
         $foundFiles = $found['files'];
 
-        if ($this->postersFlag) {
+        if ($this->postersFlag || $this->cleanFlag) {
             // Single-folder detection. TV: season folders ("Season
             // N"/"Specials") among the children, or a flat folder of
             // episode files. Movies: movie files sit directly in the
@@ -959,12 +1003,18 @@ class PosterCli
 
             if ($isSingleShow) {
                 printf("Processing the scan root as a single %s folder.\n", $this->movieFlag ? 'movie' : 'show');
-                $this->downloadForFolders([$cleanPath]);
-                return;
+                $targets = [$cleanPath];
+            } else {
+                // Only the immediate child directories matter.
+                $targets = $foundDirs;
             }
 
-            // Posters mode: only the immediate child directories matter.
-            $this->downloadForFolders($foundDirs);
+            if ($this->postersFlag) {
+                $this->downloadForFolders($targets);
+            } else {
+                // --clean on its own: tidy up without downloading.
+                $this->cleanFolders($targets);
+            }
             return;
         }
 

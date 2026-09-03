@@ -99,10 +99,10 @@ Movie ids are plain numbers to the user — the API's `movie-` prefix is handled
 ### Tidy up after downloading — `--clean`
 
 ```sh
-php run.php --scan=/x/Movies --posters --clean
+php run.php --scan=/x/Movies --clean
 ```
 
-A personal clean-up pass, run after each successful poster download: deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=PSA,XYZ` in `.env` — bare names, the hyphen is added by the script) from video filename suffixes, saves a `<video name>-poster.jpg` copy of the poster, and renames the folder to `Title  (Year)` with a size tag (`DL+`/`DL`/`SL`/`SLite` by GiB size) and `.4k` for 2160p files — e.g. `The Runner  (2026).DL.4k`.
+A personal clean-up pass. Combined with `--posters` it runs after each successful poster download; on its own it tidies folders without downloading anything. It deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=PSA,XYZ` in `.env` — bare names, the hyphen is added by the script) from video filename suffixes, saves a `<video name>-poster.jpg` copy of the poster (the freshly downloaded one, or the folder's existing poster), and renames the folder to `Title  (Year)` with a size tag (`DL+`/`DL`/`SL`/`SLite` by GiB size) and `.4k` for 2160p files — e.g. `The Runner  (2026).DL.4k`.
 
 ## Output and naming
 
