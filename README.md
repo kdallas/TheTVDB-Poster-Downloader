@@ -44,7 +44,7 @@ Movies:            php run.php --scan=/x/Movies --posters --movie
 php run.php --title="My Hero Academia"
 ```
 
-Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. If the API finds nothing for a long title, the search retries with trailing words dropped until something matches. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
+Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. If the API finds nothing for a long title, the search retries with trailing words dropped until something matches, then re-ranks those results against the full original title to isolate the exact entry. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
 
 ### Fetch a poster by series ID — `--poster=`
 

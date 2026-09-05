@@ -173,14 +173,24 @@ class PosterCli
      */
     /**
      * Canonical comparison form: lowercase, parenthesized years
-     * stripped, and any punctuation runs collapsed to a single space —
-     * "Face/Off" and "Face-Off" both compare equal to "Face Off".
-     * Letters/numbers of any script survive (CJK titles intact).
+     * stripped, any punctuation runs collapsed to a single space —
+     * "Face/Off" and "Face-Off" both compare equal to "Face Off" — and
+     * roman numerals as standalone tokens become arabic digits, so the
+     * API's "Arc II" equals a scene name's "Arc 2". Both sides of any
+     * comparison use this form, so titles are never distorted
+     * asymmetrically. Letters/numbers of any script survive (CJK
+     * titles intact).
      */
     private function canonicalTitle(string $s): string
     {
         $s = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $s)));
         $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s);
+        $s = preg_replace_callback(
+            '/(?<![a-z])(iii|viii|vii|vi|iv|ix|ii|i|v|x)(?![a-z])/',
+            fn($m) => (string) ['i' => 1, 'ii' => 2, 'iii' => 3, 'iv' => 4, 'v' => 5,
+                               'vi' => 6, 'vii' => 7, 'viii' => 8, 'ix' => 9, 'x' => 10][$m[1]],
+            $s
+        );
         return trim(preg_replace('/\s+/u', ' ', $s));
     }
 
@@ -541,6 +551,13 @@ class PosterCli
             $results = $this->enrichEnglish($data['data'] ?? []);
             $results = $this->rankResults($results, $tryQuery, $year);
             if ($results !== []) {
+                // If the query was shortened, re-rank the (greedier)
+                // results against the ORIGINAL query — the later words
+                // may isolate the exact entry ("...Arc 2 The Battle For
+                // Doldrey" among the three Golden Age movies).
+                if ($tryQuery !== $query) {
+                    $results = $this->rankResults($results, $query, $year);
+                }
                 $finalQuery = $tryQuery;
                 break;
             }
