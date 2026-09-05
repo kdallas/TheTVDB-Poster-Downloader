@@ -171,29 +171,60 @@ class PosterCli
      * translation happens to be exactly "Kaleidoscope".
      * PHP 8 sorts are stable, so ties keep the API's original order.
      */
+    /**
+     * Canonical comparison form: lowercase, parenthesized years
+     * stripped, and any punctuation runs collapsed to a single space —
+     * "Face/Off" and "Face-Off" both compare equal to "Face Off".
+     * Letters/numbers of any script survive (CJK titles intact).
+     */
+    private function canonicalTitle(string $s): string
+    {
+        $s = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $s)));
+        $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s);
+        return trim(preg_replace('/\s+/u', ' ', $s));
+    }
+
+    /**
+     * Match tier for one title against the needle; lower = better.
+     * $exactTier/$exactTier+1 are returned for exact/contains matches,
+     * so the caller can rank own-name matches above English ones.
+     */
+    private function titleTier(string $title, string $needle, int $exactTier): int
+    {
+        $title = $this->canonicalTitle($title);
+        if ($title === $needle) return $exactTier;
+        if ($needle !== '' && str_contains($title, $needle)) return $exactTier + 1;
+        return 5;
+    }
+
+    /**
+     * The row's title closest to the searched folder name — the API's
+     * own name normally, but the English title when that is what the
+     * folder name actually matched (a folder named "Berserk: The Golden
+     * Age..." keeps English; a "ベルセルク..." folder keeps Japanese).
+     */
+    private function closestTitle(array $row, string $query): string
+    {
+        $needle = $this->canonicalTitle($query);
+        $name = $row['name'] ?? '';
+        $en   = $row['_english'] ?? '';
+
+        $nameTier = $this->titleTier($name, $needle, 1);
+        $enTier   = $this->titleTier($en, $needle, 3);
+
+        // Lower tier wins; ties keep the API's own name.
+        return $enTier < $nameTier ? $en : $name;
+    }
+
     private function rankResults(array $results, string $needle, int $year = 0): array
     {
-        // Canonical comparison form: lowercase, parenthesized years
-        // stripped, and any punctuation runs collapsed to a single space
-        // — "Face/Off" and "Face-Off" both compare equal to "Face Off".
-        // Letters/numbers of any script survive (CJK titles intact).
-        $canonical = function (string $s): string {
-            $s = mb_strtolower(trim(preg_replace('/\(\d{4}\)/', '', $s)));
-            $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s);
-            return trim(preg_replace('/\s+/u', ' ', $s));
-        };
-        $needle = $canonical($needle);
+        $needle = $this->canonicalTitle($needle);
 
         // Tier number for a single result; lower = better.
-        $tier = function (array $r) use ($needle, $canonical): int {
-            $name = $canonical($r['name'] ?? '');
-            $en   = $canonical($r['_english'] ?? '');
-
-            if ($name === $needle) return 1;
-            if ($needle !== '' && str_contains($name, $needle)) return 2;
-            if ($en === $needle) return 3;
-            if ($needle !== '' && str_contains($en, $needle)) return 4;
-            return 5;
+        $tier = function (array $r) use ($needle): int {
+            $nameTier = $this->titleTier($r['name'] ?? '', $needle, 1);
+            if ($nameTier !== 5) return $nameTier;
+            return $this->titleTier($r['_english'] ?? '', $needle, 3);
         };
 
         usort($results, function ($a, $b) use ($tier, $year) {
@@ -275,25 +306,21 @@ class PosterCli
         // --movie switches the search to movies (same /search endpoint).
         $type = $this->movieFlag ? 'movie' : 'series';
 
-        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $type]);
-        $data = json_decode($response, true);
-
-        if ($httpCode === 401) {
-            throw new Exception('Token rejected even after re-auth (HTTP 401)');
-        }
-        if ($httpCode !== 200) {
-            throw new Exception("Search failed (HTTP {$httpCode}): {$response}");
-        }
-
-        $results = $this->enrichEnglish($data['data'] ?? []);
-        $results = $this->rankResults($results, $query, $year);
+        $found = $this->searchTitle($query, $year);
+        $results = $found['results'];
+        $finalQuery = $found['query'];
 
         $yearNote = $year > 0 ? ", year {$year}" : '';
-        printf("Search \"%s\" (%s%s): %d result(s)\n\n", $query, $type, $yearNote, count($results));
-
         if ($results === []) {
-            printf("No results.\n");
+            printf("Search \"%s\" (%s%s): 0 result(s)\n\nNo results.\n", $query, $type, $yearNote);
             return;
+        }
+
+        if ($finalQuery !== $query) {
+            printf("Search \"%s\" (%s%s): %d result(s) — shortened from \"%s\"\n\n",
+                $finalQuery, $type, $yearNote, count($results), $query);
+        } else {
+            printf("Search \"%s\" (%s%s): %d result(s)\n\n", $finalQuery, $type, $yearNote, count($results));
         }
 
         $rows = [];
@@ -491,19 +518,36 @@ class PosterCli
     }
 
     /**
-     * Search the API for a cleaned folder title and return the ranked
-     * results (throws when the API call itself fails). Shared by the
-     * --posters and --clean flows.
+     * Search the API for a title; returns the ranked results plus the
+     * query that actually matched (throws when the API call itself
+     * fails). If the full query finds nothing, trailing words are
+     * dropped one at a time — the API's index can miss long titles.
+     * Shared by the --posters, --clean, and --title flows.
      */
     private function searchTitle(string $query, int $year): array
     {
-        [$httpCode, $response] = TvdbApi::get('/search', ['query' => $query, 'type' => $this->movieFlag ? 'movie' : 'series']);
-        $data = json_decode($response, true);
-        if ($httpCode !== 200) {
-            throw new Exception("search failed (HTTP {$httpCode})");
+        $results = [];
+        $finalQuery = $query;
+        $queryTokens = preg_split('/\s+/', trim($query)) ?: [];
+        while ($queryTokens !== []) {
+            $tryQuery = implode(' ', $queryTokens);
+
+            [$httpCode, $response] = TvdbApi::get('/search', ['query' => $tryQuery, 'type' => $this->movieFlag ? 'movie' : 'series']);
+            $data = json_decode($response, true);
+            if ($httpCode !== 200) {
+                throw new Exception("search failed (HTTP {$httpCode})");
+            }
+
+            $results = $this->enrichEnglish($data['data'] ?? []);
+            $results = $this->rankResults($results, $tryQuery, $year);
+            if ($results !== []) {
+                $finalQuery = $tryQuery;
+                break;
+            }
+            array_pop($queryTokens);
         }
-        $results = $this->enrichEnglish($data['data'] ?? []);
-        return $this->rankResults($results, $query, $year);
+
+        return ['results' => $results, 'query' => $finalQuery];
     }
 
     /**
@@ -565,7 +609,9 @@ class PosterCli
 
                 // Folder name (minus any parenthesized year and trailing
                 // junk) = title.
-                $results = $this->searchTitle($query, $year);
+                $found = $this->searchTitle($query, $year);
+                $results = $found['results'];
+                $matchedQuery = $found['query'];
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
@@ -605,7 +651,13 @@ class PosterCli
                     // Root poster exists; with --seasons the season pass
                     // just uses the top-ranked match.
                     $mediaId = str_replace($idPrefix, '', $results[0]['id']);
+                    $matchedRow = $results[0];
                 }
+
+                // Report what the folder matched on (the title closest to
+                // the query that actually matched, plus the id).
+                printf("Matched: \"%s\" (%s-%s)\n",
+                    $this->closestTitle($matchedRow, $matchedQuery), $type, $mediaId);
 
                 // Root poster (skipped when one already exists).
                 if (!$hasPoster) {
@@ -625,7 +677,7 @@ class PosterCli
                     // --clean: personal tidy-up, only after a successful
                     // poster download + copy.
                     if ($this->cleanFlag) {
-                        $this->cleanFolder($cleanDir, $target, $matchedRow, $year);
+                        $this->cleanFolder($cleanDir, $target, $matchedRow, $year, $matchedQuery);
                     }
                 }
 
@@ -693,7 +745,8 @@ class PosterCli
             try {
                 // The top match supplies the API title + year for the
                 // rename step.
-                $results = $this->searchTitle($query, $year);
+                $found = $this->searchTitle($query, $year);
+                $results = $found['results'];
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
@@ -702,7 +755,7 @@ class PosterCli
                 // Poster copy source: the folder's existing poster, if any.
                 $poster = $this->existingPoster($cleanDir);
 
-                $this->cleanFolder($cleanDir, $poster, $results[0], $year);
+                $this->cleanFolder($cleanDir, $poster, $results[0], $year, $found['query']);
             } catch (Exception $e) {
                 printf("Skip   : %s (%s)\n", $title, $e->getMessage());
             }
@@ -719,14 +772,15 @@ class PosterCli
      *      filename bases
      *   3. save a copy of the poster next to the (first) video file,
      *      named <video name>-poster.<ext>
-     *   4. rename the folder from the API title and year:
+     *   4. rename the folder from the matched title closest to the
+     *      searched name (own name or English title) and the year:
      *      "My Movie  (2026)" (two spaces before the year, colon →
      *      semicolon, other Windows-illegal characters stripped and
      *      logged), then a size tag (GiB: >8.2 "DL+", >4.5 "DL",
      *      >2 "SL", else "SLite") and, when the filename contains
      *      "2160p", ".4k" — e.g. "My Movie  (2026).SL.4k"
      */
-    private function cleanFolder(string $folder, string $posterPath, ?array $matchedRow, int $folderYearHint)
+    private function cleanFolder(string $folder, string $posterPath, ?array $matchedRow, int $folderYearHint, string $query)
     {
         // 1. Release-scene text files.
         $textFiles = array_merge(
@@ -785,11 +839,11 @@ class PosterCli
         // (2026)" (two spaces before the year, colon → semicolon), then
         // the size tag and, when the filename says 2160p, ".4k".
         if ($firstVideo !== '' && $matchedRow !== null) {
-            $apiName = $matchedRow['name'] ?? '';
             $apiYear = (int) (substr($matchedRow['first_air_time'] ?? '', 0, 4) ?: ($matchedRow['year'] ?? 0));
             if ($apiYear === 0) {
                 $apiYear = $folderYearHint; // folder-name year as a fallback
             }
+            $apiName = $this->closestTitle($matchedRow, $query);
             if ($apiName !== '' && $apiYear > 0) {
                 $titlePart = str_replace(':', ';', trim($apiName));
                 $titlePart = str_replace('/', '-', $titlePart); // "/" reads better as a hyphen

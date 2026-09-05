@@ -44,7 +44,7 @@ Movies:            php run.php --scan=/x/Movies --posters --movie
 php run.php --title="My Hero Academia"
 ```
 
-Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
+Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. If the API finds nothing for a long title, the search retries with trailing words dropped until something matches. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then year, newest first. A parenthesized year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint.
 
 ### Fetch a poster by series ID — `--poster=`
 
@@ -102,11 +102,11 @@ Movie ids are plain numbers to the user — the API's `movie-` prefix is handled
 php run.php --scan=/x/Movies --clean
 ```
 
-A personal clean-up pass. Combined with `--posters` it runs after each successful poster download; on its own it tidies folders without downloading anything. It deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=PSA,XYZ` in `.env` — bare names, the hyphen is added by the script) from video filename suffixes, saves a `<video name>-poster.jpg` copy of the poster (the freshly downloaded one, or the folder's existing poster), and renames the folder to `Title  (Year)` with a size tag (`DL+`/`DL`/`SL`/`SLite` by GiB size) and `.4k` for 2160p files — e.g. `The Runner  (2026).DL.4k`.
+A personal clean-up pass. Combined with `--posters` it runs after each successful poster download; on its own it tidies folders without downloading anything. It deletes `*.nfo`/`*.txt` files in the folder, strips scene release tags (listed as `RELEASE_TAGS=PSA,XYZ` in `.env` — bare names, the hyphen is added by the script) from video filename suffixes, saves a `<video name>-poster.jpg` copy of the poster (the freshly downloaded one, or the folder's existing poster), and renames the folder to `Title  (Year)` — the title closest to the searched name, so an English-named folder keeps the English title while a Japanese-named one stays Japanese — with a size tag (`DL+`/`DL`/`SL`/`SLite` by GiB size) and `.4k` for 2160p files — e.g. `The Runner  (2026).DL.4k`.
 
 ## Output and naming
 
 - Downloads are cached in `artwork/` (gitignored) — unless `CACHE_ARTWORK=false` is set in `.env`, in which case posters are written directly into the folders and nothing is cached:
   - series posters: `<seriesId>-<image basename>.jpg` — e.g. `449146-6a0e1f176a889.jpg`
   - season posters: `<seriesId>-<nn>-<image basename>.jpg` — e.g. `101501-01-6116a0eb8f514.jpg`
-- `Done :` lines report the matched series; `Skip : <reason>` lines report per-folder problems, and the run continues with the next folder.
+- Each folder prints a `Matched:` line with the title and id it matched on, then `Done :` for the saved poster; `Skip : <reason>` lines report per-folder problems, and the run continues with the next folder.
