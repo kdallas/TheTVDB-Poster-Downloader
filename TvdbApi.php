@@ -25,6 +25,24 @@ class TvdbApi
     }
 
     /**
+     * Shared curl plumbing for login(), get(), and download(): run one
+     * request and return [result, httpCode, curlError]. $result is the
+     * response body (a string), or true/false when the caller set
+     * CURLOPT_FILE. curl_close() is deliberately absent — deprecated
+     * and a no-op since PHP 8; the handle frees itself.
+     */
+    private static function request(string $url, array $options): array
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, $options);
+
+        $result = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $curlError = curl_error($ch);
+        return [$result, $httpCode, $curlError];
+    }
+
+    /**
      * Exchange the API key in .env for a bearer token and store it (plus its
      * expiry timestamp) back into .env. Returns [token, expiry].
      */
@@ -58,12 +76,7 @@ class TvdbApi
         //     $options[CURLOPT_CAINFO] = $caFile;
         // }
 
-        $ch = curl_init(self::API_URL . '/login');
-        curl_setopt_array($ch, $options);
-
-        $response = curl_exec($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $curlError = curl_error($ch);
+        [$response, $httpCode, $curlError] = self::request(self::API_URL . '/login', $options);
 
         if ($response === false) {
             throw new Exception("curl request failed: {$curlError}");
@@ -85,6 +98,11 @@ class TvdbApi
         $contents = preg_replace('/^AUTH_TOKEN=.*$/m', 'AUTH_TOKEN=' . $token, $contents);
         $contents = preg_replace('/^AUTH_EXPIRY=.*$/m', 'AUTH_EXPIRY=' . $expiry, $contents);
 
+        // Appending only works cleanly if the file ends with a newline —
+        // otherwise the new key glues onto the last existing line.
+        if ($contents !== '' && !str_ends_with($contents, "\n")) {
+            $contents .= PHP_EOL;
+        }
         if (!preg_match('/^AUTH_TOKEN=/m', $contents)) {
             $contents .= 'AUTH_TOKEN=' . $token . PHP_EOL;
         }
@@ -137,8 +155,7 @@ class TvdbApi
         $token = self::token();
 
         for ($attempt = 1; $attempt <= 2; $attempt++) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
+            [$response, $httpCode, $curlError] = self::request($url, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT        => 30,
                 CURLOPT_HTTPHEADER     => [
@@ -146,10 +163,6 @@ class TvdbApi
                     'Authorization: Bearer ' . $token,
                 ],
             ]);
-
-            $response = curl_exec($ch);
-            $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-            $curlError = curl_error($ch);
 
             if ($response === false) {
                 throw new Exception("curl request failed: {$curlError}");
@@ -178,19 +191,17 @@ class TvdbApi
             throw new Exception("Could not open {$dest} for writing");
         }
 
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
+        [$ok, $httpCode, $curlError] = self::request($url, [
             CURLOPT_FILE           => $fp,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_TIMEOUT        => 60,
         ]);
-
-        $ok = curl_exec($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $curlError = curl_error($ch);
         fclose($fp);
 
         if ($ok === false) {
+            // Don't leave a partial file behind — it could end up
+            // copied as poster.jpg later.
+            @unlink($dest);
             throw new Exception("Download failed: {$curlError}");
         }
         if ($httpCode !== 200) {

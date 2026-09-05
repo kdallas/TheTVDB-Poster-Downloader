@@ -57,8 +57,12 @@ class Paths
     /**
      * Non-recursive directory scan, replacing the ScanDir class (this
      * project never used its extension filter or recursion). Returns
-     * ['files' => [...], 'dirs' => [...]] with forward-slash paths —
-     * directory paths keep the trailing slash from sanitizePath().
+     * ['files' => [...], 'dirs' => [...]] with forward-slash paths,
+     * directory entries carrying a trailing slash.
+     * $path must already be sanitized (a sanitizePath() result, or a
+     * path from a previous scan()) — backslashes are unified here, but
+     * the quote stripping and /c/ drive-letter conversion are not
+     * reapplied.
      */
     public static function scan($path): array {
         $files = [];
@@ -69,15 +73,20 @@ class Paths
             return ['files' => $files, 'dirs' => $dirs];
         }
 
+        // $path arrives already sanitized (scanFolder() normalizes it),
+        // so each child only needs its slashes unified — running the
+        // full sanitizePath() per entry would redo the regex and re-stat
+        // the path twice for nothing.
+        $base = rtrim(str_replace('\\', '/', $path), '/');
         foreach ($entries as $entry) {
             if ($entry === '.' || $entry === '..') {
                 continue;
             }
-            $full = self::sanitizePath($path . '/' . $entry);
+            $full = $base . '/' . $entry;
             if (is_file($full)) {
                 $files[] = $full;
             } elseif (is_dir($full)) {
-                $dirs[] = $full;
+                $dirs[] = $full . '/'; // keep the trailing slash for dirs
             }
         }
 

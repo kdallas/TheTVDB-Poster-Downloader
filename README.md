@@ -19,7 +19,7 @@ A small PHP CLI tool that talks to the [TheTVDB v4 API](https://thetvdb.github.i
 
    Optionally add `CACHE_ARTWORK=false` to skip the `artwork/` cache: posters are then downloaded straight into each folder and no extra copy is kept.
 
-2. Run `php run.php` from the project folder.
+2. Run `php run.php` — you can invoke it from any directory; the scripts resolve the classes and `.env` relative to the project folder itself.
 
 Login happens automatically on first run — there is deliberately no login command. The token is reused until one day before it expires, to avoid requesting more tokens than necessary. `.env` holds live secrets and is gitignored.
 
@@ -36,6 +36,8 @@ Fetch + seasons:   php run.php --scan=/x/SciFi --posters --seasons
 Movies:            php run.php --title="Interstellar" --movie
 Movies:            php run.php --poster=131079 --movie
 Movies:            php run.php --scan=/x/Movies --posters --movie
+Clean:             php run.php --scan=/x/Movies --posters --clean
+Clean:             php run.php --scan=/x/Movies/Interstellar --clean
 ```
 
 ### Search a series — `--title=`
@@ -68,7 +70,7 @@ Lists the folder contents: subdirectories first, then files. Windows (`G:\...`),
 php run.php --scan=/x/SciFi --posters
 ```
 
-For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done :` line then shows the attempt, e.g. `(series-410092) [2nd]`. A year ends the meaningful part of the folder name — parenthesized (`Interstellar (2014).abc.XYZ`) or a bare dot-separated token in release-style names (`Interstellar.2014.1080p...`) — so quality/format suffixes after it are dropped automatically. In movie mode, any video files at the folder root mark it as the movie itself, so subfolders like `Subs` are ignored.
+For each show folder: if `poster.jpg`/`poster.png` already exists it is skipped; otherwise the folder name is searched against the API (a parenthesized year like `Lazarus (2025)` is used as a ranking hint) and the best match's poster is saved to `artwork/` and copied into the folder as `poster.<ext>`. If the best match has no poster artwork at all, the next best match is tried — the `Done   :` line then shows the attempt, e.g. `(series-410092) [2nd]`. A year ends the meaningful part of the folder name — parenthesized (`Interstellar (2014).abc.XYZ`) or a bare dot-separated token in release-style names (`Interstellar.2014.1080p...`) — so quality/format suffixes after it are dropped automatically. In movie mode, any video files at the folder root mark it as the movie itself, so subfolders like `Subs` are ignored.
 
 You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders, or a flat folder with the episode files sitting directly inside, is detected and processed on its own:
 
@@ -109,4 +111,4 @@ A personal clean-up pass. Combined with `--posters` it runs after each successfu
 - Downloads are cached in `artwork/` (gitignored) — unless `CACHE_ARTWORK=false` is set in `.env`, in which case posters are written directly into the folders and nothing is cached:
   - series posters: `<seriesId>-<image basename>.jpg` — e.g. `449146-6a0e1f176a889.jpg`
   - season posters: `<seriesId>-<nn>-<image basename>.jpg` — e.g. `101501-01-6116a0eb8f514.jpg`
-- Each folder prints a `Matched:` line with the title and id it matched on, then `Done :` for the saved poster; `Skip : <reason>` lines report per-folder problems, and the run continues with the next folder.
+- Each folder prints a `Matched:` line with the title and id it matched on, then `Done   :` for the saved poster; `Skip   : <reason>` lines report per-folder problems, and the run continues with the next folder. With `--clean`, `Clean  :` lines report each tidy-up step — deleted text files, video renames, the saved `<video name>-poster` copy, the folder rename.

@@ -19,7 +19,9 @@ within 1 day of expiry) — there is deliberately no manual login command.
 */
 
 spl_autoload_register(function ($class_name) {
-    include $class_name . '.php';
+    // Classes live next to this file — resolving against __DIR__ means
+    // run.php works from any directory, not just the project dir.
+    include __DIR__ . DIRECTORY_SEPARATOR . $class_name . '.php';
 });
 
 $app = new PosterCli($argv);

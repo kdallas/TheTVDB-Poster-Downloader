@@ -25,8 +25,14 @@ class PosterEnv
     public static function env(): array
     {
         if (self::$cache === null) {
+            $envFile = self::envFile();
+            if (!is_file($envFile)) {
+                // Fail with a clear message instead of file() warnings
+                // followed by a confusing "API_KEY is empty".
+                throw new Exception($envFile . ' not found — it must hold at least API_KEY');
+            }
             $env = [];
-            foreach (file(self::envFile(), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+            foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
                 $line = trim($line);
                 if ($line === '' || $line[0] === '#') {
                     continue;
@@ -61,7 +67,8 @@ class PosterEnv
     }
 
     /**
-     * Read a comma-separated list from .env, e.g. RELEASE_TAGS=-PSA,-XYZ.
+     * Read a comma-separated list from .env, e.g. RELEASE_TAGS=PSA,XYZ —
+     * bare tag names; cleanFolder() prepends the hyphen when checking.
      * Returns the trimmed, non-empty entries; [] when the key is missing.
      */
     public static function envList(string $key): array

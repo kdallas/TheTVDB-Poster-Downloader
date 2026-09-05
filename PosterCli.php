@@ -2,9 +2,10 @@
 
 /**
  * CLI entry point class for the tvdb-posters tools. Parses $argv, then
- * runs the requested action: search by --title, or --login to force a
- * fresh token. Same shape as BatchEncoder: constructor takes $argv,
- * run() does the work, errors are exceptions caught as "Error: ...".
+ * runs the requested action: search by --title, a poster lookup by
+ * --poster, or a library scan by --scan. Same shape as BatchEncoder:
+ * constructor takes $argv, run() does the work, errors are exceptions
+ * caught as "Error: ...".
  */
 
 class PosterCli
@@ -17,6 +18,12 @@ class PosterCli
     private $seasonsFlag = false;  // --seasons (with --scan --posters, fetch season posters too)
     private $movieFlag = false;    // --movie (movie mode: /movies/ endpoints, movie- id prefix)
     private $cleanFlag = false;    // --clean (with --scan --posters, tidy up after each poster)
+    private $englishCache = [];    // search-result id -> English title (enrichEnglish() fills it)
+
+    // Standalone roman numerals up to X — canonicalTitle() turns them
+    // into digits so "Arc II" and "Arc 2" compare equal.
+    private const ROMAN = ['i' => 1, 'ii' => 2, 'iii' => 3, 'iv' => 4, 'v' => 5,
+                           'vi' => 6, 'vii' => 7, 'viii' => 8, 'ix' => 9, 'x' => 10];
 
     public function __construct($argv) {
         try {
@@ -48,25 +55,15 @@ class PosterCli
             $arg = $argv[$i];
 
             if (str_starts_with($arg, '--title=')) {
-                $this->titleInput = substr($arg, 8);
                 // Stitch spaces if the title was unquoted: --title=Star City
-                for ($j = $i + 1; $j < count($argv); $j++) {
-                    if (str_starts_with($argv[$j], '-')) break;
-                    $this->titleInput .= " " . $argv[$j];
-                    $i++;
-                }
+                $this->titleInput = $this->stitchWords($argv, $i, substr($arg, 8));
             }
             elseif (str_starts_with($arg, '--poster=')) {
                 $this->posterId = substr($arg, 9);
             }
             elseif (str_starts_with($arg, '--scan=')) {
-                $this->scanPath = substr($arg, 7);
                 // Stitch spaces if the path was unquoted: --scan=/c/My TV Shows
-                for ($j = $i + 1; $j < count($argv); $j++) {
-                    if (str_starts_with($argv[$j], '-')) break;
-                    $this->scanPath .= " " . $argv[$j];
-                    $i++;
-                }
+                $this->scanPath = $this->stitchWords($argv, $i, substr($arg, 7));
             }
             elseif ($arg === '--posters') {
                 $this->postersFlag = true;
@@ -97,11 +94,10 @@ class PosterCli
             // The mode's id prefix (series- / movie-) is accepted but
             // optional — search tables show it, users shouldn't have to
             // strip it themselves.
-            $prefix = $this->movieFlag ? 'movie-' : 'series-';
-            $posterCheck = str_replace($prefix, '', $this->posterId);
+            $posterCheck = $this->bareId($this->posterId);
             if (!ctype_digit($posterCheck)) {
                 throw new Exception('Invalid --poster value "' . $this->posterId . '" — expected a numeric id'
-                                  . " (optionally with a {$prefix} prefix)");
+                                  . " (optionally with a {$this->idPrefix()} prefix)");
             }
         }
         if ($this->postersFlag && empty($this->scanPath)) {
@@ -116,6 +112,48 @@ class PosterCli
         if ($this->cleanFlag && empty($this->scanPath)) {
             throw new Exception('--clean can only be used together with --scan');
         }
+    }
+
+    /**
+     * The mode's id prefix ("series-" / "movie-") and media kind, both
+     * derived from --movie — resolved here so the rest of the class
+     * doesn't repeat the ternary.
+     */
+    private function idPrefix(): string
+    {
+        return $this->movieFlag ? 'movie-' : 'series-';
+    }
+
+    private function mediaKind(): string
+    {
+        return $this->movieFlag ? 'movie' : 'series';
+    }
+
+    /**
+     * Strip a LEADING series-/movie- prefix from an id (--poster= and
+     * search results may carry it). str_replace would also strip the
+     * token from anywhere inside the string, so match the head only.
+     */
+    private function bareId(string $id): string
+    {
+        $prefix = $this->idPrefix();
+        return str_starts_with($id, $prefix) ? substr($id, strlen($prefix)) : $id;
+    }
+
+    /**
+     * Stitch the words after a --title= / --scan= value into it, for
+     * when the value was left unquoted: "--title=Star City" arrives as
+     * two $argv entries. Stops at the next flag and advances $i past
+     * the words consumed.
+     */
+    private function stitchWords(array $argv, int &$i, string $value): string
+    {
+        for ($j = $i + 1; $j < count($argv); $j++) {
+            if (str_starts_with($argv[$j], '-')) break;
+            $value .= " " . $argv[$j];
+            $i++;
+        }
+        return $value;
     }
 
     /**
@@ -153,25 +191,6 @@ class PosterCli
     }
 
     /**
-     * Rank search results, best match first:
-     *   1. The series' own name IS the term ("Solos")
-     *   2. The own name CONTAINS the term ("Kaleidoscope (2023)")
-     *   3. The English title IS the term (a translation match)
-     *   4. The English title CONTAINS the term
-     *   5. Everything else the search API matched (aliases, overviews, ...)
-     * Titles are compared with parenthesized years stripped, mirroring
-     * splitYear() on the input: "The Librarians (2014)" counts as an
-     * exact match for "The Librarians", so the spin-off "The Librarians:
-     * The Next Chapter" stays in the contains tier.
-     * Within a tier: a parenthesized year hint ("Lazarus (2025)") is
-     * preferred, then newest first by air date; no-date entries sink.
-     * Own-title matches rank above translation matches — searching
-     * "Kaleidoscope" should put the series actually titled
-     * "Kaleidoscope (2023)" above a Vietnamese show whose English
-     * translation happens to be exactly "Kaleidoscope".
-     * PHP 8 sorts are stable, so ties keep the API's original order.
-     */
-    /**
      * Canonical comparison form: lowercase, parenthesized years
      * stripped, any punctuation runs collapsed to a single space —
      * "Face/Off" and "Face-Off" both compare equal to "Face Off" — and
@@ -187,8 +206,7 @@ class PosterCli
         $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s);
         $s = preg_replace_callback(
             '/(?<![a-z])(iii|viii|vii|vi|iv|ix|ii|i|v|x)(?![a-z])/',
-            fn($m) => (string) ['i' => 1, 'ii' => 2, 'iii' => 3, 'iv' => 4, 'v' => 5,
-                               'vi' => 6, 'vii' => 7, 'viii' => 8, 'ix' => 9, 'x' => 10][$m[1]],
+            fn($m) => (string) self::ROMAN[$m[1]],
             $s
         );
         return trim(preg_replace('/\s+/u', ' ', $s));
@@ -226,6 +244,25 @@ class PosterCli
         return $enTier < $nameTier ? $en : $name;
     }
 
+    /**
+     * Rank search results, best match first:
+     *   1. The series' own name IS the term ("Solos")
+     *   2. The own name CONTAINS the term ("Kaleidoscope (2023)")
+     *   3. The English title IS the term (a translation match)
+     *   4. The English title CONTAINS the term
+     *   5. Everything else the search API matched (aliases, overviews, ...)
+     * Titles are compared with parenthesized years stripped, mirroring
+     * splitYear() on the input: "The Librarians (2014)" counts as an
+     * exact match for "The Librarians", so the spin-off "The Librarians:
+     * The Next Chapter" stays in the contains tier.
+     * Within a tier: a parenthesized year hint ("Lazarus (2025)") is
+     * preferred, then newest first by air date; no-date entries sink.
+     * Own-title matches rank above translation matches — searching
+     * "Kaleidoscope" should put the series actually titled
+     * "Kaleidoscope (2023)" above a Vietnamese show whose English
+     * translation happens to be exactly "Kaleidoscope".
+     * PHP 8 sorts are stable, so ties keep the API's original order.
+     */
     private function rankResults(array $results, string $needle, int $year = 0): array
     {
         $needle = $this->canonicalTitle($needle);
@@ -236,32 +273,40 @@ class PosterCli
             if ($nameTier !== 5) return $nameTier;
             return $this->titleTier($r['_english'] ?? '', $needle, 3);
         };
+        // Some records only carry a year, no full air date — use it as
+        // the fallback so new releases rank correctly.
+        $yearOf = fn(array $r) => (int) (substr($r['first_air_time'] ?? '', 0, 4) ?: ($r['year'] ?? 0));
 
-        usort($results, function ($a, $b) use ($tier, $year) {
-            $tierDiff = $tier($a) - $tier($b);
+        // Decorate-sort-undecorate: compute each row's rank keys once,
+        // then sort on the precomputed values. Comparing rows directly
+        // would re-run the canonicalTitle() regexes on BOTH rows for
+        // EVERY comparison (O(n log n) times).
+        $scored = array_map(fn($r) => [
+            'tier' => $tier($r),
+            'year' => $yearOf($r),
+            'row'  => $r,
+        ], $results);
+
+        usort($scored, function ($a, $b) use ($year) {
+            $tierDiff = $a['tier'] - $b['tier'];
             if ($tierDiff !== 0) {
                 return $tierDiff;
             }
 
-            // Some records only carry a year, no full air date — use it
-            // as the fallback so new releases rank correctly.
-            $aYear = (int) (substr($a['first_air_time'] ?? '', 0, 4) ?: ($a['year'] ?? 0));
-            $bYear = (int) (substr($b['first_air_time'] ?? '', 0, 4) ?: ($b['year'] ?? 0));
-
             // Prefer the year the title carried — "Lazarus (2025)" — so
             // a remake or name-clash from that year wins over the rest.
             if ($year > 0) {
-                $aYearMatch = $aYear === $year;
-                $bYearMatch = $bYear === $year;
+                $aYearMatch = $a['year'] === $year;
+                $bYearMatch = $b['year'] === $year;
                 if ($aYearMatch !== $bYearMatch) {
                     return $aYearMatch ? -1 : 1;
                 }
             }
 
-            return $bYear - $aYear; // newest first
+            return $b['year'] - $a['year']; // newest first
         });
 
-        return $results;
+        return array_column($scored, 'row');
     }
 
     /**
@@ -269,7 +314,9 @@ class PosterCli
      * primary language is already English the name IS the English title,
      * so we skip the API call. Otherwise ask for the English translation
      * record (GET /series/{id}/translations/eng) and use its `name`
-     * field. Returns '' when no English name is available.
+     * field. Returns '' when no English name is available. Lookups are
+     * cached per id — shortened-query retries can ask about the same
+     * series more than once in a run.
      */
     private function englishTitle(array $result): string
     {
@@ -277,25 +324,31 @@ class PosterCli
             return $result['name'] ?? '';
         }
 
-        $id = str_replace($this->movieFlag ? 'movie-' : 'series-', '', $result['id'] ?? '');
+        $id = $result['id'] ?? '';
         if ($id === '') {
             return '';
         }
-
-        [$code, $body] = TvdbApi::get(($this->movieFlag ? '/movies/' : '/series/') . $id . '/translations/eng');
-        if ($code !== 200) {
-            return '';
+        if (array_key_exists($id, $this->englishCache)) {
+            return $this->englishCache[$id];
         }
 
-        $data = json_decode($body, true);
-        return $data['data']['name'] ?? '';
+        [$code, $body] = TvdbApi::get(($this->movieFlag ? '/movies/' : '/series/') . $this->bareId($id) . '/translations/eng');
+        $english = '';
+        if ($code === 200) {
+            $data = json_decode($body, true);
+            $english = $data['data']['name'] ?? '';
+        }
+
+        $this->englishCache[$id] = $english;
+        return $english;
     }
 
     /**
-     * Add each result's English title under the '_english' key (one API
-     * call per non-English-primary result). Called once BEFORE ranking so
-     * the ranker's exact-match tier can see English titles, and the same
-     * values are reused for the search table's Title (EN) column.
+     * Add each result's English title under the '_english' key — one
+     * API call per non-English-primary result, cached per id for the
+     * whole run. Called once BEFORE ranking so the ranker's
+     * exact-match tier can see English titles, and the same values are
+     * reused for the search table's Title (EN) column.
      */
     private function enrichEnglish(array $results): array
     {
@@ -314,7 +367,7 @@ class PosterCli
         $year   = $parsed['year'];
 
         // --movie switches the search to movies (same /search endpoint).
-        $type = $this->movieFlag ? 'movie' : 'series';
+        $type = $this->mediaKind();
 
         $found = $this->searchTitle($query, $year);
         $results = $found['results'];
@@ -360,8 +413,8 @@ class PosterCli
         // The mode's id prefix (series- / movie-) is optional; movie mode
         // reads /movies/{id}/extended (there is no /movies/{id}/artworks
         // endpoint).
-        $id   = str_replace($this->movieFlag ? 'movie-' : 'series-', '', $this->posterId);
-        $kind = $this->movieFlag ? 'movie' : 'series';
+        $id   = $this->bareId($this->posterId);
+        $kind = $this->mediaKind();
         $artPath = ($this->movieFlag ? '/movies/' . $id . '/extended' : '/series/' . $id . '/artworks');
 
         [$httpCode, $response] = TvdbApi::get($artPath);
@@ -410,10 +463,10 @@ class PosterCli
 
         // Download to ./artwork/<id>-<basename of image URL>.
         $url = $winner['image'];
-        $filename = $id . '-' . basename(parse_url($url, PHP_URL_PATH));
+        $filename = $id . '-' . basename(parse_url($url, PHP_URL_PATH) ?? '');
         $dir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
+        if (!is_dir($dir) && !@mkdir($dir, 0777, true)) {
+            throw new Exception("Could not create {$dir}");
         }
         $dest = $dir . DIRECTORY_SEPARATOR . $filename;
 
@@ -542,7 +595,7 @@ class PosterCli
         while ($queryTokens !== []) {
             $tryQuery = implode(' ', $queryTokens);
 
-            [$httpCode, $response] = TvdbApi::get('/search', ['query' => $tryQuery, 'type' => $this->movieFlag ? 'movie' : 'series']);
+            [$httpCode, $response] = TvdbApi::get('/search', ['query' => $tryQuery, 'type' => $this->mediaKind()]);
             $data = json_decode($response, true);
             if ($httpCode !== 200) {
                 throw new Exception("search failed (HTTP {$httpCode})");
@@ -594,10 +647,9 @@ class PosterCli
         // Fetch the artwork type map once for the whole run.
         $typeMap = $this->fetchArtworkTypes();
 
-        // Movie mode decides the search type, the id prefix, and the
-        // artwork endpoint — resolved once instead of per folder.
-        $type      = $this->movieFlag ? 'movie' : 'series';
-        $idPrefix  = $this->movieFlag ? 'movie-' : 'series-';
+        // Movie mode decides the search type and the artwork endpoint —
+        // resolved once instead of per folder.
+        $type      = $this->mediaKind();
         $artBase   = $this->movieFlag ? '/movies/' : '/series/';
         $artSuffix = $this->movieFlag ? '/extended' : '/artworks';
 
@@ -645,7 +697,7 @@ class PosterCli
                 $attempt = 0;
                 if (!$hasPoster) {
                     foreach ($results as $r) {
-                        $candidateId = str_replace($idPrefix, '', $r['id']);
+                        $candidateId = $this->bareId($r['id']);
                         $attempt++;
 
                         $artPath = $artBase . $candidateId . $artSuffix;
@@ -667,7 +719,7 @@ class PosterCli
                 } else {
                     // Root poster exists; with --seasons the season pass
                     // just uses the top-ranked match.
-                    $mediaId = str_replace($idPrefix, '', $results[0]['id']);
+                    $mediaId = $this->bareId($results[0]['id']);
                     $matchedRow = $results[0];
                 }
 
@@ -682,7 +734,7 @@ class PosterCli
                     // default, or downloaded straight into the folder
                     // when CACHE_ARTWORK=false (savePoster()).
                     $url = $winner['image'];
-                    $cacheName = $mediaId . '-' . basename(parse_url($url, PHP_URL_PATH));
+                    $cacheName = $mediaId . '-' . basename(parse_url($url, PHP_URL_PATH) ?? '');
                     $target = $this->savePoster($url, $cacheName, $cleanDir);
 
                     // Note the attempt when a later match supplied the poster.
@@ -717,7 +769,7 @@ class PosterCli
      */
     private function savePoster(string $url, string $cacheName, string $folderPath): string
     {
-        $ext = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION);
+        $ext = pathinfo(parse_url($url, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION);
         if ($ext === '') {
             $ext = 'jpg';
         }
@@ -731,8 +783,8 @@ class PosterCli
 
         // Cache first, then copy into the folder.
         $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
-        if (!is_dir($artworkDir)) {
-            mkdir($artworkDir, 0777, true);
+        if (!is_dir($artworkDir) && !@mkdir($artworkDir, 0777, true)) {
+            throw new Exception("Could not create {$artworkDir}");
         }
         $dest = $artworkDir . DIRECTORY_SEPARATOR . $cacheName;
         TvdbApi::download($url, $dest);
@@ -781,7 +833,7 @@ class PosterCli
 
     /**
      * --clean pass, run only after a successful poster download + copy
-     * (personal tidy-up, printed as "Clean :" lines):
+     * (personal tidy-up, printed as "Clean  :" lines):
      *   1. delete *.nfo and *.txt files (release-scene text files)
      *   2. strip the release tags listed in RELEASE_TAGS (.env, comma
      *      separated, e.g. "PSA,XYZ" — bare names, the script prepends
@@ -806,7 +858,7 @@ class PosterCli
         );
         foreach ($textFiles as $file) {
             if (unlink($file)) {
-                printf("Clean : deleted %s\n", basename($file));
+                printf("Clean  : deleted %s\n", basename($file));
             }
         }
 
@@ -832,7 +884,7 @@ class PosterCli
             if ($newBase !== $base) {
                 $newPath = $folder . DIRECTORY_SEPARATOR . $newBase . '.' . $ext;
                 if (rename($video, $newPath)) {
-                    printf("Clean : renamed %s → %s\n", basename($video), basename($newPath));
+                    printf("Clean  : renamed %s → %s\n", basename($video), basename($newPath));
                     $finalPath = $newPath;
                 }
             }
@@ -848,7 +900,7 @@ class PosterCli
             $posterExt = pathinfo($posterPath, PATHINFO_EXTENSION);
             $copyPath = $folder . DIRECTORY_SEPARATOR . $posterBase . '-poster.' . $posterExt;
             if (copy($posterPath, $copyPath)) {
-                printf("Clean : saved %s\n", basename($copyPath));
+                printf("Clean  : saved %s\n", basename($copyPath));
             }
         }
 
@@ -868,7 +920,7 @@ class PosterCli
                 // (and log the encounter) rather than failing the rename.
                 $sanitized = preg_replace('/[?*\/\\\\"<>|]/', '', $titlePart);
                 if ($sanitized !== $titlePart) {
-                    printf("Clean : stripped illegal characters from title \"%s\"\n", $titlePart);
+                    printf("Clean  : stripped illegal characters from title \"%s\"\n", $titlePart);
                 }
 
                 $newName = $sanitized . '  (' . $apiYear . ')';
@@ -880,9 +932,9 @@ class PosterCli
                 if ($sanitized !== '' && $newName !== basename($folder)) {
                     $parent = dirname($folder);
                     if (rename($folder, $parent . DIRECTORY_SEPARATOR . $newName)) {
-                        printf("Clean : renamed folder → %s\n", $newName);
+                        printf("Clean  : renamed folder → %s\n", $newName);
                     } else {
-                        printf("Clean : could not rename folder to %s\n", $newName);
+                        printf("Clean  : could not rename folder to %s\n", $newName);
                     }
                 }
             }
@@ -944,7 +996,7 @@ class PosterCli
         foreach ($seasonDirs as $seasonDir) {
             try {
                 $seasonPath = rtrim($seasonDir['path'], '/\\');
-                if (is_file($seasonPath . '/poster.jpg') || is_file($seasonPath . '/poster.png')) {
+                if ($this->existingPoster($seasonPath) !== '') {
                     printf("Skip   : %s/%s (poster already exists)\n", $title, $seasonDir['name']);
                     continue;
                 }
@@ -961,7 +1013,7 @@ class PosterCli
                 // CACHE_ARTWORK=false (savePoster()).
                 $url = $season['image'];
                 $nn = str_pad((string) $seasonDir['number'], 2, '0', STR_PAD_LEFT);
-                $cacheName = $seriesId . '-' . $nn . '-' . basename(parse_url($url, PHP_URL_PATH));
+                $cacheName = $seriesId . '-' . $nn . '-' . basename(parse_url($url, PHP_URL_PATH) ?? '');
                 $target = $this->savePoster($url, $cacheName, $seasonPath);
 
                 printf("Done   : %s/%s → %s (season %d)\n",
