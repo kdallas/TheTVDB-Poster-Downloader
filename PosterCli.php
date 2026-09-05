@@ -832,6 +832,32 @@ class PosterCli
     }
 
     /**
+     * Root-level files in $dir with the given extension (case-
+     * insensitive), in directory order. scandir()-based because glob()
+     * would read the [ and ] that scene folder names carry — "My Movie
+     * Test (1999) [1080p] [BluRay] [5.1]" — as character classes,
+     * so a pattern built from such a path matches nothing.
+     */
+    private function folderFiles(string $dir, string $ext): array
+    {
+        $files = [];
+        $entries = scandir($dir);
+        if ($entries === false) {
+            return $files;
+        }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            if (strcasecmp(pathinfo($entry, PATHINFO_EXTENSION), $ext) === 0
+                && is_file($dir . DIRECTORY_SEPARATOR . $entry)) {
+                $files[] = $dir . DIRECTORY_SEPARATOR . $entry;
+            }
+        }
+        return $files;
+    }
+
+    /**
      * --clean pass, run only after a successful poster download + copy
      * (personal tidy-up, printed as "Clean  :" lines):
      *   1. delete *.nfo and *.txt files (release-scene text files)
@@ -853,8 +879,8 @@ class PosterCli
     {
         // 1. Release-scene text files.
         $textFiles = array_merge(
-            glob($folder . DIRECTORY_SEPARATOR . '*.nfo') ?: [],
-            glob($folder . DIRECTORY_SEPARATOR . '*.txt') ?: []
+            $this->folderFiles($folder, 'nfo'),
+            $this->folderFiles($folder, 'txt')
         );
         foreach ($textFiles as $file) {
             if (unlink($file)) {
@@ -865,8 +891,8 @@ class PosterCli
         // 2. Strip release tags from video filename bases.
         $tags = PosterEnv::envList('RELEASE_TAGS');
         $videos = array_merge(
-            glob($folder . DIRECTORY_SEPARATOR . '*.mkv') ?: [],
-            glob($folder . DIRECTORY_SEPARATOR . '*.mp4') ?: []
+            $this->folderFiles($folder, 'mkv'),
+            $this->folderFiles($folder, 'mp4')
         );
         $posterBase = ''; // first video's (cleaned) base, for step 3
         $firstVideo = ''; // first video's final path, for step 4
