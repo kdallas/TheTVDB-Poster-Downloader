@@ -128,7 +128,8 @@ class PosterCli
             throw new Exception('--clean can only be used together with --scan');
         }
         if ($this->tmdbFlag && ($this->titleInput === '' || $this->scanPath !== '' || $this->posterId !== '')) {
-            throw new Exception('--tmdb applies to a --title search only: php run.php --title="Star City" --tmdb');
+            throw new Exception('--tmdb applies to a --title search only (folder scans fall back to TMDB automatically):' . "\n" .
+                                '       php run.php --title="Star City" --tmdb');
         }
     }
 
@@ -419,10 +420,11 @@ class PosterCli
     /**
      * --title --tmdb: search TMDB instead of TheTVDB. Same year hint and
      * ranking as the TVDB search, so the two can be compared side by
-     * side; this is also the lookup half of the planned fallback for
-     * titles TheTVDB does not have. TMDB returns the localised (en-US)
-     * title directly and has no translation records, so `_english` stays
-     * empty and only the own-name tiers of resultTier() apply.
+     * side; the folder flows use the same lookup through tmdbFallback()
+     * when TVDB has no record of a title. TMDB returns the localised
+     * (en-US) title directly and has no translation records, so
+     * `_english` stays empty and only the own-name tiers of resultTier()
+     * apply.
      */
     private function tmdbTitleSearch(): void
     {
@@ -444,19 +446,7 @@ class PosterCli
 
         // Normalise to the shape rankResults() expects, then reuse it, so
         // the ordering is the one the TVDB search would have produced.
-        $rows = [];
-        foreach ($results as $r) {
-            $rows[] = [
-                'id'             => 'tmdb-' . $kind . '-' . ($r['id'] ?? '?'),
-                'name'           => $r['title'] ?? $r['name'] ?? '',
-                '_english'       => '',
-                'first_air_time' => $r['release_date'] ?? $r['first_air_date'] ?? '',
-                'year'           => 0,
-                '_original'      => $r['original_title'] ?? $r['original_name'] ?? '',
-                '_poster'        => $r['poster_path'] ?? null,
-            ];
-        }
-        $rows = $this->rankResults($rows, $query, $year);
+        $rows = $this->rankResults($this->tmdbRows($results, $kind), $query, $year);
 
         $table = [];
         foreach ($rows as $r) {
@@ -477,6 +467,35 @@ class PosterCli
         }
 
         $this->tmdbCredit();
+    }
+
+    /**
+     * Reshape raw TMDB search results into the row shape the ranker and
+     * the table renderers expect — the same keys the TVDB search produces,
+     * so both go through rankResults() unchanged. $kind is TMDB's own
+     * endpoint name ('tv' / 'movie'). The id gets a "tmdb-" prefix so it
+     * is obvious in the output where a match came from (bareId() only
+     * strips series-/movie-, so a tmdb- id survives it intact).
+     * `_english` stays empty on purpose: TMDB already returns the en-US
+     * title and has no translation records, so the English-title tiers of
+     * resultTier() have nothing to compare against; the original-language
+     * title rides along as `_original` for display only.
+     */
+    private function tmdbRows(array $results, string $kind): array
+    {
+        $rows = [];
+        foreach ($results as $r) {
+            $rows[] = [
+                'id'             => 'tmdb-' . $kind . '-' . ($r['id'] ?? '?'),
+                'name'           => $r['title'] ?? $r['name'] ?? '',
+                '_english'       => '',
+                'first_air_time' => $r['release_date'] ?? $r['first_air_date'] ?? '',
+                'year'           => 0,
+                '_original'      => $r['original_title'] ?? $r['original_name'] ?? '',
+                '_poster'        => $r['poster_path'] ?? null,
+            ];
+        }
+        return $rows;
     }
 
     private function search() {
@@ -577,7 +596,7 @@ class PosterCli
         }
         $dest = $dir . DIRECTORY_SEPARATOR . $filename;
 
-        TvdbApi::download($url, $dest);
+        Http::download($url, $dest);
 
         printf("\nSaved: artwork/%s (%s bytes)\n", $filename, number_format(filesize($dest)));
     }
@@ -789,6 +808,89 @@ class PosterCli
     }
 
     /**
+     * TMDB fallback for a folder TheTVDB cannot name: look its title up on
+     * TMDB and, when TMDB has a title match with a poster, save that. The
+     * same "don't guess" rule as the TVDB side applies — a result set with
+     * no tier 1-4 match against the folder name is not used, however
+     * recent its year. Returns true when the folder was handled; false
+     * lets the caller print its own TVDB skip line and suggestions.
+     *
+     * Only the poster comes from TMDB: cleanFolder() is handed a null
+     * $matchedRow, which no-ops its rename step. TMDB is queried with
+     * language=en-US, so its title would anglicise a foreign-named folder
+     * that closestTitle() keeps native on the TVDB side. The rest of the
+     * tidy-up (text files, release tags, the -poster copy) still runs.
+     */
+    private function tmdbFallback(string $folder, string $query, int $year, string $title): bool
+    {
+        // No key configured: keep the TVDB-only behaviour, silently —
+        // repeating the advice on every unmatched folder would be noise.
+        if (TmdbApi::apiKey() === '') {
+            return false;
+        }
+
+        $kind = $this->movieFlag ? 'movie' : 'tv';
+        try {
+            $rows = $this->tmdbRows(TmdbApi::search($query, $kind), $kind);
+        } catch (Exception $e) {
+            // A rejected key or a network failure must not abort the run:
+            // report it against this folder and move on to the next.
+            printf("Skip   : %s (TMDB: %s)\n", $title, $e->getMessage());
+            return true;
+        }
+        if ($rows === []) {
+            return false;
+        }
+
+        // The same year hint and ranking the TVDB search would have used.
+        $rows = $this->rankResults($rows, $query, $year);
+        if (!$this->hasTitleMatch($rows, $query)) {
+            return false;
+        }
+
+        // Walk the ranked rows for one that has a poster, mirroring the
+        // TVDB walk ("[2nd]" and all).
+        $winner = null;
+        $attempt = 0;
+        foreach ($rows as $r) {
+            $attempt++;
+            if ($r['_poster'] !== null) {
+                $winner = $r;
+                break;
+            }
+        }
+        if ($winner === null) {
+            return false;
+        }
+
+        $mediaId   = $winner['id']; // already prefixed: tmdb-tv-123
+        $url       = TmdbApi::posterUrl($winner['_poster']);
+        $cacheName = $mediaId . '-' . basename(parse_url($url, PHP_URL_PATH) ?? '');
+
+        printf("Matched: \"%s\" (%s)\n", $this->closestTitle($winner, $query), $mediaId);
+
+        $target = $this->savePoster($url, $cacheName, $folder);
+        $nth = $attempt > 1 ? ' [' . $this->ordinal($attempt) . ']' : '';
+        printf("Done   : %s → %s (%s)%s\n",
+            $title, Paths::sanitizePath($target, false), $mediaId, $nth);
+
+        if ($this->cleanFlag) {
+            // Steps 1-3 (text files, release tags, the -poster copy) —
+            // the null row is what keeps the rename out of it.
+            $this->cleanFolder($folder, $target, null, $year, $query);
+            printf("Clean  : rename skipped for \"%s\" (matched on TMDB)\n", $title);
+        }
+        if ($this->seasonsFlag) {
+            // The fallback returns before the season pass: seasons come
+            // from /series/{id}/extended, and there is no TVDB id here.
+            printf("Skip   : %s (season posters need a TVDB match)\n", $title);
+        }
+
+        $this->tmdbCredit();
+        return true;
+    }
+
+    /**
      * --scan --posters mode. For each immediate child directory (a TV show
      * folder — or a movie folder with --movie): skip it if it already has
      * poster.jpg/poster.png; otherwise use the folder name as the title,
@@ -797,8 +899,10 @@ class PosterCli
      * jpg source → poster.jpg). With --seasons, a second pass then
      * fetches posters for the folder's "Season N"/"Specials" subfolders
      * (downloadSeasonPosters()); with --clean the tidy-up pass runs after
-     * a successful download (cleanFolder()). Per-folder problems print
-     * "Skip :" and move on to the next folder.
+     * a successful download (cleanFolder()). A folder whose full title
+     * TVDB has no record of gets a TMDB lookup instead (tmdbFallback())
+     * before it is skipped. Per-folder problems print "Skip :" and move
+     * on to the next folder.
      */
     private function downloadForFolders(array $dirs) {
         // Fetch the artwork type map once for the whole run.
@@ -847,14 +951,21 @@ class PosterCli
                 $results = $found['results'];
                 $matchedQuery = $found['query'];
                 if ($results === []) {
+                    if (!$hasPoster && $this->tmdbFallback($cleanDir, $query, $year, $title)) {
+                        continue;
+                    }
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
                 }
 
                 // The full folder title matched nothing on TVDB — the
                 // search only found anything by dropping words. Don't
-                // guess: report it and offer the closest titles.
+                // guess: ask TMDB instead, and fall back to reporting the
+                // closest TVDB titles if it has nothing either.
                 if (!$found['titleMatched']) {
+                    if (!$hasPoster && $this->tmdbFallback($cleanDir, $query, $year, $title)) {
+                        continue;
+                    }
                     printf("Skip   : %s (no match for the full title on TVDB)\n", $title);
                     $this->suggestTitles($results, $matchedQuery);
                     continue;
@@ -951,7 +1062,7 @@ class PosterCli
 
         if (!PosterEnv::envFlag('CACHE_ARTWORK', true)) {
             // Direct download — no ./artwork copy.
-            TvdbApi::download($url, $target);
+            Http::download($url, $target);
             return $target;
         }
 
@@ -961,7 +1072,7 @@ class PosterCli
             throw new Exception("Could not create {$artworkDir}");
         }
         $dest = $artworkDir . DIRECTORY_SEPARATOR . $cacheName;
-        TvdbApi::download($url, $dest);
+        Http::download($url, $dest);
 
         if (!copy($dest, $target)) {
             throw new Exception("could not copy poster into {$target}");
@@ -1490,8 +1601,8 @@ class PosterCli
      * rather than once per folder. The sentence is fixed by TMDB's API
      * Terms of Use (paragraph 3) and must stay verbatim; the same notice
      * appears in README.md and run.php's usage block, the program's other
-     * attribution surfaces. Called wherever TMDB supplies data — the
-     * --title --tmdb search today, the folder fallback next.
+     * attribution surfaces. Called wherever TMDB supplies data: the
+     * --title --tmdb search and the folder fallback (tmdbFallback()).
      */
     private function tmdbCredit(): void
     {

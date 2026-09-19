@@ -162,33 +162,4 @@ class TvdbApi
 
         return [0, '']; // unreachable; keeps static analysis happy
     }
-
-    /**
-     * Download a file (e.g. an artwork image) to $dest with curl.
-     */
-    public static function download(string $url, string $dest): void
-    {
-        $fp = fopen($dest, 'wb');
-        if ($fp === false) {
-            throw new Exception("Could not open {$dest} for writing");
-        }
-
-        [$ok, $httpCode, $curlError] = Http::request($url, [
-            CURLOPT_FILE           => $fp,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_TIMEOUT        => 60,
-        ]);
-        fclose($fp);
-
-        if ($ok === false) {
-            // Don't leave a partial file behind — it could end up
-            // copied as poster.jpg later.
-            @unlink($dest);
-            throw new Exception("Download failed: {$curlError}");
-        }
-        if ($httpCode !== 200) {
-            @unlink($dest); // don't leave a partial file behind
-            throw new Exception("Download failed (HTTP {$httpCode}): {$url}");
-        }
-    }
 }
