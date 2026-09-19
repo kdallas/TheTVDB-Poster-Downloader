@@ -118,8 +118,15 @@ A personal clean-up pass. Combined with `--posters` it runs after each successfu
 
 ## Credits
 
-![TMDB](assets/tmdb-logo.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/thetvdb-logo-inverse.png">
+  <img alt="TheTVDB" src="assets/thetvdb-logo.png" height="100">
+</picture>
+
+Metadata provided by [TheTVDB](https://thetvdb.com). Please consider adding missing information or [subscribing](https://thetvdb.com/subscribe).
+
+<br>
+
+<img alt="TMDB" src="assets/tmdb-logo.svg" width="500">
 
 This program uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. Artwork and metadata fetched from TMDB remain © TMDB — their API is free for non-commercial use with attribution. See [themoviedb.org](https://www.themoviedb.org).
-
-Everything else comes from [TheTVDB](https://thetvdb.com) via its v4 API.
