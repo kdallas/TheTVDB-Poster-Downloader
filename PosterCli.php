@@ -18,12 +18,18 @@ class PosterCli
     private $seasonsFlag = false;  // --seasons (with --scan --posters, fetch season posters too)
     private $movieFlag = false;    // --movie (movie mode: /movies/ endpoints, movie- id prefix)
     private $cleanFlag = false;    // --clean (with --scan --posters, tidy up after each poster)
+    private $tmdbFlag = false;     // --tmdb (with --title=, search TMDB instead of TheTVDB)
     private $englishCache = [];    // search-result id -> English title (enrichEnglish() fills it)
+    private $tmdbCreditShown = false; // TMDB notice already printed (tmdbCredit())
 
     // Standalone roman numerals up to X — canonicalTitle() turns them
     // into digits so "Arc II" and "Arc 2" compare equal.
     private const ROMAN = ['i' => 1, 'ii' => 2, 'iii' => 3, 'iv' => 4, 'v' => 5,
                            'vi' => 6, 'vii' => 7, 'viii' => 8, 'ix' => 9, 'x' => 10];
+
+    // TMDB attribution, fixed by their API Terms of Use (paragraph 3).
+    // Printed once per run by tmdbCredit() — keep the wording verbatim.
+    private const TMDB_NOTICE = 'This program uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
 
     // Columns of the search-result tables: the --title listing and the
     // "did you mean?" block in the folder flows (resultRows()).
@@ -45,6 +51,8 @@ class PosterCli
                 $this->scanFolder();
             } elseif ($this->posterId !== '') {
                 $this->posterLookup();
+            } elseif ($this->tmdbFlag) {
+                $this->tmdbTitleSearch();
             } else {
                 $this->search();
             }
@@ -81,6 +89,9 @@ class PosterCli
             elseif ($arg === '--clean') {
                 $this->cleanFlag = true;
             }
+            elseif ($arg === '--tmdb') {
+                $this->tmdbFlag = true;
+            }
             else {
                 throw new Exception("Unknown argument: {$arg}");
             }
@@ -115,6 +126,9 @@ class PosterCli
         }
         if ($this->cleanFlag && empty($this->scanPath)) {
             throw new Exception('--clean can only be used together with --scan');
+        }
+        if ($this->tmdbFlag && ($this->titleInput === '' || $this->scanPath !== '' || $this->posterId !== '')) {
+            throw new Exception('--tmdb applies to a --title search only: php run.php --title="Star City" --tmdb');
         }
     }
 
@@ -400,6 +414,69 @@ class PosterCli
         }
         unset($r);
         return $results;
+    }
+
+    /**
+     * --title --tmdb: search TMDB instead of TheTVDB. Same year hint and
+     * ranking as the TVDB search, so the two can be compared side by
+     * side; this is also the lookup half of the planned fallback for
+     * titles TheTVDB does not have. TMDB returns the localised (en-US)
+     * title directly and has no translation records, so `_english` stays
+     * empty and only the own-name tiers of resultTier() apply.
+     */
+    private function tmdbTitleSearch(): void
+    {
+        $parsed = $this->splitYear($this->titleInput);
+        $query  = $parsed['title'];
+        $year   = $parsed['year'];
+        $kind   = $this->movieFlag ? 'movie' : 'tv';
+
+        // Call first, print after: a rejected key should surface as the
+        // error, not as a half-written header line.
+        $results = TmdbApi::search($query, $kind);
+
+        printf("TMDB search \"%s\" (%s%s): %d result(s)\n\n",
+            $query, $kind, $year > 0 ? ", year {$year}" : '', count($results));
+
+        if ($results === []) {
+            return;
+        }
+
+        // Normalise to the shape rankResults() expects, then reuse it, so
+        // the ordering is the one the TVDB search would have produced.
+        $rows = [];
+        foreach ($results as $r) {
+            $rows[] = [
+                'id'             => 'tmdb-' . $kind . '-' . ($r['id'] ?? '?'),
+                'name'           => $r['title'] ?? $r['name'] ?? '',
+                '_english'       => '',
+                'first_air_time' => $r['release_date'] ?? $r['first_air_date'] ?? '',
+                'year'           => 0,
+                '_original'      => $r['original_title'] ?? $r['original_name'] ?? '',
+                '_poster'        => $r['poster_path'] ?? null,
+            ];
+        }
+        $rows = $this->rankResults($rows, $query, $year);
+
+        $table = [];
+        foreach ($rows as $r) {
+            $table[] = [
+                $r['id'],
+                $r['name'] !== '' ? $r['name'] : '(no title)',
+                $r['_original'] !== '' ? $r['_original'] : '—',
+                $r['first_air_time'] !== '' ? $r['first_air_time'] : '—',
+                $r['_poster'] !== null ? 'yes' : '—',
+            ];
+        }
+        echo $this->renderTable(['ID', 'Title', 'Original title', 'Released', 'Poster'], $table);
+
+        // The top match's poster URL proves the image host and path shape
+        // work before anything downloads through them.
+        if ($rows[0]['_poster'] !== null) {
+            printf("\nTop match poster: %s\n", TmdbApi::posterUrl($rows[0]['_poster']));
+        }
+
+        $this->tmdbCredit();
     }
 
     private function search() {
@@ -1405,6 +1482,25 @@ class PosterCli
         }
 
         return $width;
+    }
+
+    /**
+     * TMDB attribution — printed once per run, the first time a poster
+     * comes from the TMDB fallback, so a library scan credits TMDB once
+     * rather than once per folder. The sentence is fixed by TMDB's API
+     * Terms of Use (paragraph 3) and must stay verbatim; the same notice
+     * appears in README.md and run.php's usage block, the program's other
+     * attribution surfaces. Called wherever TMDB supplies data — the
+     * --title --tmdb search today, the folder fallback next.
+     */
+    private function tmdbCredit(): void
+    {
+        if ($this->tmdbCreditShown) {
+            return;
+        }
+        $this->tmdbCreditShown = true;
+
+        printf("\n%s\n", self::TMDB_NOTICE);
     }
 
     /**

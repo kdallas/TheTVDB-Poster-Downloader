@@ -25,24 +25,6 @@ class TvdbApi
     }
 
     /**
-     * Shared curl plumbing for login(), get(), and download(): run one
-     * request and return [result, httpCode, curlError]. $result is the
-     * response body (a string), or true/false when the caller set
-     * CURLOPT_FILE. curl_close() is deliberately absent — deprecated
-     * and a no-op since PHP 8; the handle frees itself.
-     */
-    private static function request(string $url, array $options): array
-    {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, $options);
-
-        $result = curl_exec($ch);
-        $httpCode = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $curlError = curl_error($ch);
-        return [$result, $httpCode, $curlError];
-    }
-
-    /**
      * Exchange the API key in .env for a bearer token and store it (plus its
      * expiry timestamp) back into .env. Returns [token, expiry].
      */
@@ -76,7 +58,7 @@ class TvdbApi
         //     $options[CURLOPT_CAINFO] = $caFile;
         // }
 
-        [$response, $httpCode, $curlError] = self::request(self::API_URL . '/login', $options);
+        [$response, $httpCode, $curlError] = Http::request(self::API_URL . '/login', $options);
 
         if ($response === false) {
             throw new Exception("curl request failed: {$curlError}");
@@ -155,7 +137,7 @@ class TvdbApi
         $token = self::token();
 
         for ($attempt = 1; $attempt <= 2; $attempt++) {
-            [$response, $httpCode, $curlError] = self::request($url, [
+            [$response, $httpCode, $curlError] = Http::request($url, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT        => 30,
                 CURLOPT_HTTPHEADER     => [
@@ -191,7 +173,7 @@ class TvdbApi
             throw new Exception("Could not open {$dest} for writing");
         }
 
-        [$ok, $httpCode, $curlError] = self::request($url, [
+        [$ok, $httpCode, $curlError] = Http::request($url, [
             CURLOPT_FILE           => $fp,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_TIMEOUT        => 60,

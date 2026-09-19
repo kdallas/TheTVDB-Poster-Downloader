@@ -16,6 +16,10 @@ USAGE EXAMPLES:
 
 NOTE: Login happens automatically (first run, or when the stored token is
 within 1 day of expiry) — there is deliberately no manual login command.
+
+TMDB: titles with no match on TheTVDB fall back to a TMDB lookup. This
+program uses TMDB and the TMDB APIs but is not endorsed, certified, or
+otherwise approved by TMDB.
 */
 
 spl_autoload_register(function ($class_name) {

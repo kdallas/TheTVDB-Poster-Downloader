@@ -115,3 +115,11 @@ A personal clean-up pass. Combined with `--posters` it runs after each successfu
   - season posters: `<seriesId>-<nn>-<image basename>.jpg` — e.g. `101501-01-6116a0eb8f514.jpg`
 - Each folder prints a `Matched:` line with the title and id it matched on, then `Done   :` for the saved poster; `Skip   : <reason>` lines report per-folder problems, and the run continues with the next folder. With `--clean`, `Clean  :` lines report each tidy-up step — deleted text files, video renames, the saved `<video name>-poster` copy, the folder rename.
 - Tables pad by display width, so CJK and other wide characters line up, and non-spacing marks — combining accents, Indic vowel signs, zero-width joiners — are given no cell at all. A terminal that measures *rendered* glyphs rather than characters can still draw a complex-script row a cell narrower than that, so an Indic title may sit one space short in those. Nothing is trimmed: we measure by the Unicode rules, the terminal is measuring its font. If your terminal is one of those, set `TABLE_MARKS_ADJUST=-1` in `.env` — cells containing such marks are then measured a cell narrower and padded a space wider, lining the borders back up. Only cells with marks are nudged, so the rows that were already correct stay correct.
+
+## Credits
+
+![TMDB](assets/tmdb-logo.svg)
+
+This program uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. Artwork and metadata fetched from TMDB remain © TMDB — their API is free for non-commercial use with attribution. See [themoviedb.org](https://www.themoviedb.org).
+
+Everything else comes from [TheTVDB](https://thetvdb.com) via its v4 API.
