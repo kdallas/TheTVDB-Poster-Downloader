@@ -20,7 +20,7 @@ within 1 day of expiry) — there is deliberately no manual login command.
 
 TMDB: titles with no match on TheTVDB fall back to a TMDB lookup (needs
 TMDB_API_KEY in .env); --title=... --tmdb searches TMDB directly — TV
-shows, or films when --movie is given too. This program uses TMDB and the
+shows, or movies when --movie is given too. This program uses TMDB and the
 TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.
 */
 

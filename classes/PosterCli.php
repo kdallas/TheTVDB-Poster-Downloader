@@ -313,7 +313,7 @@ class PosterCli
      * first, so the first installment beats a sequel. A folder named
      * "My.Movie.2018..." must find "My Movie", not "My Movie 2" — the
      * sequel's own name merely CONTAINS the searched title, and without
-     * the hint it would sit a tier higher than the 2018 film, whose own
+     * the hint it would sit a tier higher than the 2018 movie, whose own
      * name is in another script and whose exact match is the English
      * title. Only rows that matched the title (tiers 1-4)
      * qualify: a coincidental year on a loosely matched record must not
