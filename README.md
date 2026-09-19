@@ -127,6 +127,8 @@ Metadata provided by [TheTVDB](https://thetvdb.com). Please consider adding miss
 
 <br>
 
-<img alt="TMDB" src="assets/tmdb-logo.svg" width="500">
+<picture>
+  <img alt="TMDB" src="assets/tmdb-logo.svg" width="500">
+</picture>
 
 This program uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. Artwork and metadata fetched from TMDB remain © TMDB — their API is free for non-commercial use with attribution. See [themoviedb.org](https://www.themoviedb.org).
