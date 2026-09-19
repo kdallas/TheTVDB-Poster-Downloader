@@ -23,9 +23,10 @@ otherwise approved by TMDB.
 */
 
 spl_autoload_register(function ($class_name) {
-    // Classes live next to this file — resolving against __DIR__ means
-    // run.php works from any directory, not just the project dir.
-    include __DIR__ . DIRECTORY_SEPARATOR . $class_name . '.php';
+    // Classes live in classes/ next to this file — resolving against
+    // __DIR__ means run.php works from any directory, not just the
+    // project dir.
+    include __DIR__ . DIRECTORY_SEPARATOR . 'classes' . DIRECTORY_SEPARATOR . $class_name . '.php';
 });
 
 $app = new PosterCli($argv);

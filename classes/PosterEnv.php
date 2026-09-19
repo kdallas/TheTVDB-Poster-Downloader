@@ -11,9 +11,13 @@ class PosterEnv
     /** Parsed .env, cached for the life of the process. */
     private static $cache = null;
 
+    /**
+     * Absolute path to .env. It lives in the project root, one level up
+     * from classes/ (Paths::projectRoot()) — same as artwork/.
+     */
     public static function envFile(): string
     {
-        return __DIR__ . DIRECTORY_SEPARATOR . '.env';
+        return Paths::projectRoot() . DIRECTORY_SEPARATOR . '.env';
     }
 
     /**

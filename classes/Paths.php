@@ -8,6 +8,17 @@
 class Paths
 {
     /**
+     * Absolute path to the project folder — the parent of the folder this
+     * class lives in (classes/). .env, artwork/ and the README sit there,
+     * so classes resolve project files against the root rather than
+     * against their own directory.
+     */
+    public static function projectRoot(): string
+    {
+        return dirname(__DIR__);
+    }
+
+    /**
      * CENTRAL PATH CLEANER
      * Converts everything to Forward Slashes (/) for internal consistency
      * and Git Bash compatibility.

@@ -571,7 +571,7 @@ class PosterCli
         // Download to ./artwork/<id>-<basename of image URL>.
         $url = $winner['image'];
         $filename = $id . '-' . basename(parse_url($url, PHP_URL_PATH) ?? '');
-        $dir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+        $dir = Paths::projectRoot() . DIRECTORY_SEPARATOR . 'artwork';
         if (!is_dir($dir) && !@mkdir($dir, 0777, true)) {
             throw new Exception("Could not create {$dir}");
         }
@@ -956,7 +956,7 @@ class PosterCli
         }
 
         // Cache first, then copy into the folder.
-        $artworkDir = __DIR__ . DIRECTORY_SEPARATOR . 'artwork';
+        $artworkDir = Paths::projectRoot() . DIRECTORY_SEPARATOR . 'artwork';
         if (!is_dir($artworkDir) && !@mkdir($artworkDir, 0777, true)) {
             throw new Exception("Could not create {$artworkDir}");
         }
