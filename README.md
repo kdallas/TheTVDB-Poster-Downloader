@@ -41,7 +41,8 @@ Movies:            php run.php --poster=131079 --movie
 Movies:            php run.php --scan=/x/Movies --posters --movie
 Clean:             php run.php --scan=/x/Movies --posters --clean
 Clean:             php run.php --scan=/x/Movies/Interstellar --clean
-Search TMDB:       php run.php --title="My Movie" --tmdb
+Search TMDB TV:    php run.php --title="Star City" --tmdb
+Search TMDB film:  php run.php --title="My Movie" --movie --tmdb
 ```
 
 ### Search a series — `--title=`
@@ -50,7 +51,7 @@ Search TMDB:       php run.php --title="My Movie" --tmdb
 php run.php --title="My Hero Academia"
 ```
 
-Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. If the API finds nothing for a long title, the search retries with trailing words dropped until something matches, then re-ranks those results against the full original title to isolate the exact entry. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then newest first. A year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint — and a strong one: matches from that year form the head of the list, so the first installment wins over a sequel whose title merely contains the searched name (`My Movie` beats `My Movie 2` for a 2018 query). Adding `--tmdb` searches TMDB instead of TheTVDB — same year hint, same ranking — which is a quick way to check a title TVDB doesn't list.
+Prints a table of matches (ID, Title, Title (EN), First aired, Network; `—` for missing values). Records with only a year and no full air date (common for new releases) show just the year, and ranking treats it as the air year. English titles are fetched from the API's translation records. If the API finds nothing for a long title, the search retries with trailing words dropped until something matches, then re-ranks those results against the full original title to isolate the exact entry. Results are ranked by match quality: exact own title, own title containing the term, exact English title, English title containing the term — then newest first. A year in the search (`--title="Lazarus (2025)"`) is stripped from the query and used as a ranking hint — and a strong one: matches from that year form the head of the list, so the first installment wins over a sequel whose title merely contains the searched name (`My Movie` beats `My Movie 2` for a 2018 query). Adding `--tmdb` searches TMDB instead of TheTVDB — TV shows, or films when `--movie` is given too — with the same year hint and ranking, which is a quick way to check a title TVDB doesn't list.
 
 ### Fetch a poster by series ID — `--poster=`
 

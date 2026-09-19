@@ -13,15 +13,15 @@ USAGE EXAMPLES:
     Movie:    php run.php --scan=/x/Movies --posters --movie
     Clean:    php run.php --scan=/x/Movies --posters --clean
     Clean:    php run.php --scan=/x/Movies/Interstellar --clean
-    TMDB:     php run.php --title="My Movie" --tmdb
+    TMDB:     php run.php --title="My Movie" --movie --tmdb
 
 NOTE: Login happens automatically (first run, or when the stored token is
 within 1 day of expiry) — there is deliberately no manual login command.
 
 TMDB: titles with no match on TheTVDB fall back to a TMDB lookup (needs
-TMDB_API_KEY in .env); --title=... --tmdb searches TMDB directly. This
-program uses TMDB and the TMDB APIs but is not endorsed, certified, or
-otherwise approved by TMDB.
+TMDB_API_KEY in .env); --title=... --tmdb searches TMDB directly — TV
+shows, or films when --movie is given too. This program uses TMDB and the
+TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.
 */
 
 spl_autoload_register(function ($class_name) {
