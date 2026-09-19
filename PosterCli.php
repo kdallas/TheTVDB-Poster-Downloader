@@ -25,6 +25,10 @@ class PosterCli
     private const ROMAN = ['i' => 1, 'ii' => 2, 'iii' => 3, 'iv' => 4, 'v' => 5,
                            'vi' => 6, 'vii' => 7, 'viii' => 8, 'ix' => 9, 'x' => 10];
 
+    // Columns of the search-result tables: the --title listing and the
+    // "did you mean?" block in the folder flows (resultRows()).
+    private const RESULT_HEADERS = ['ID', 'Title', 'Title (EN)', 'First aired', 'Network'];
+
     public function __construct($argv) {
         try {
             $this->parseArguments($argv);
@@ -226,6 +230,36 @@ class PosterCli
     }
 
     /**
+     * Tier number for one result against a canonicalised needle; lower =
+     * better. The own name is tried first, then the English title, so
+     * own-title matches beat translation matches.
+     */
+    private function resultTier(array $r, string $needle): int
+    {
+        $nameTier = $this->titleTier($r['name'] ?? '', $needle, 1);
+        if ($nameTier !== 5) {
+            return $nameTier;
+        }
+        return $this->titleTier($r['_english'] ?? '', $needle, 3);
+    }
+
+    /**
+     * Does any result's own or English title match $needle (tiers 1-4)?
+     * Lets a shortened search check, before re-ranking, that the
+     * ORIGINAL query matches something — see searchTitle().
+     */
+    private function hasTitleMatch(array $results, string $needle): bool
+    {
+        $needle = $this->canonicalTitle($needle);
+        foreach ($results as $r) {
+            if ($this->resultTier($r, $needle) < 5) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * The row's title closest to the searched folder name — the API's
      * own name normally, but the English title when that is what the
      * folder name actually matched (a folder named "Berserk: The Golden
@@ -255,24 +289,30 @@ class PosterCli
      * splitYear() on the input: "The Librarians (2014)" counts as an
      * exact match for "The Librarians", so the spin-off "The Librarians:
      * The Next Chapter" stays in the contains tier.
-     * Within a tier: a parenthesized year hint ("Lazarus (2025)") is
-     * preferred, then newest first by air date; no-date entries sink.
      * Own-title matches rank above translation matches — searching
      * "Kaleidoscope" should put the series actually titled
      * "Kaleidoscope (2023)" above a Vietnamese show whose English
      * translation happens to be exactly "Kaleidoscope".
-     * PHP 8 sorts are stable, so ties keep the API's original order.
+     * A year hint from the caller (a folder name, --title) forms a
+     * LEADING subset instead of a tie-breaker: rows from that year come
+     * first, so the first installment beats a sequel. A folder named
+     * "My.Movie.2018..." must find "My Movie", not "My Movie 2" — the
+     * sequel's own name merely CONTAINS the searched title, and without
+     * the hint it would sit a tier higher than the 2018 film, whose own
+     * name is in another script and whose exact match is the English
+     * title. Only rows that matched the title (tiers 1-4)
+     * qualify: a coincidental year on a loosely matched record must not
+     * ride the hint to the top, or the poster walk would fall through to
+     * it. Within each part: tier order, then newest first by air date;
+     * no-date entries sink. PHP 8 sorts are stable, so ties keep the
+     * API's original order.
      */
     private function rankResults(array $results, string $needle, int $year = 0): array
     {
         $needle = $this->canonicalTitle($needle);
 
         // Tier number for a single result; lower = better.
-        $tier = function (array $r) use ($needle): int {
-            $nameTier = $this->titleTier($r['name'] ?? '', $needle, 1);
-            if ($nameTier !== 5) return $nameTier;
-            return $this->titleTier($r['_english'] ?? '', $needle, 3);
-        };
+        $tier = fn(array $r) => $this->resultTier($r, $needle);
         // Some records only carry a year, no full air date — use it as
         // the fallback so new releases rank correctly.
         $yearOf = fn(array $r) => (int) (substr($r['first_air_time'] ?? '', 0, 4) ?: ($r['year'] ?? 0));
@@ -288,19 +328,22 @@ class PosterCli
         ], $results);
 
         usort($scored, function ($a, $b) use ($year) {
+            // A year supplied by the caller is the strongest signal we
+            // have, so its rows form the head of the list — ahead of
+            // sequels that only contain the searched name. Tiers 1-4
+            // only: a tier-5 row (an alias/overview match) must not be
+            // promoted on a coincidental year.
+            if ($year > 0) {
+                $aMatch = $a['tier'] < 5 && $a['year'] === $year;
+                $bMatch = $b['tier'] < 5 && $b['year'] === $year;
+                if ($aMatch !== $bMatch) {
+                    return $aMatch ? -1 : 1;
+                }
+            }
+
             $tierDiff = $a['tier'] - $b['tier'];
             if ($tierDiff !== 0) {
                 return $tierDiff;
-            }
-
-            // Prefer the year the title carried — "Lazarus (2025)" — so
-            // a remake or name-clash from that year wins over the rest.
-            if ($year > 0) {
-                $aYearMatch = $a['year'] === $year;
-                $bYearMatch = $b['year'] === $year;
-                if ($aYearMatch !== $bYearMatch) {
-                    return $aYearMatch ? -1 : 1;
-                }
             }
 
             return $b['year'] - $a['year']; // newest first
@@ -386,20 +429,7 @@ class PosterCli
             printf("Search \"%s\" (%s%s): %d result(s)\n\n", $finalQuery, $type, $yearNote, count($results));
         }
 
-        $rows = [];
-        foreach ($results as $r) {
-            $english = $r['_english'] ?? '';
-            $rows[] = [
-                $r['id'] ?? '?',
-                $r['name'] ?? '(no name)',
-                $english !== '' ? $english : '—',
-                !empty($r['first_air_time']) ? substr($r['first_air_time'], 0, 10)
-                    : (!empty($r['year']) ? $r['year'] : '—'),
-                !empty($r['network']) ? $r['network'] : '—',
-            ];
-        }
-
-        echo $this->renderTable(['ID', 'Title', 'Title (EN)', 'First aired', 'Network'], $rows);
+        echo $this->renderTable(self::RESULT_HEADERS, $this->resultRows($results));
     }
 
     /**
@@ -581,16 +611,22 @@ class PosterCli
     }
 
     /**
-     * Search the API for a title; returns the ranked results plus the
-     * query that actually matched (throws when the API call itself
-     * fails). If the full query finds nothing, trailing words are
-     * dropped one at a time — the API's index can miss long titles.
-     * Shared by the --posters, --clean, and --title flows.
+     * Search the API for a title; returns ['results' => ranked hits,
+     * 'query' => the query that actually matched, 'titleMatched' =>
+     * whether the full title matched a title on TVDB] (throws when the
+     * API call itself fails). If the full query finds nothing, trailing
+     * words are dropped one at a time — the API's index can miss long
+     * titles. titleMatched is false when the search had to be shortened
+     * AND the full original title matches nothing: the hits are then
+     * the closest neighbours rather than the title itself, and the
+     * folder flows skip with a "did you mean?" list instead of
+     * guessing. Shared by the --posters, --clean, and --title flows.
      */
     private function searchTitle(string $query, int $year): array
     {
         $results = [];
         $finalQuery = $query;
+        $titleMatched = false;
         $queryTokens = preg_split('/\s+/', trim($query)) ?: [];
         while ($queryTokens !== []) {
             $tryQuery = implode(' ', $queryTokens);
@@ -604,12 +640,25 @@ class PosterCli
             $results = $this->enrichEnglish($data['data'] ?? []);
             $results = $this->rankResults($results, $tryQuery, $year);
             if ($results !== []) {
-                // If the query was shortened, re-rank the (greedier)
-                // results against the ORIGINAL query — the later words
-                // may isolate the exact entry ("...Arc 2 The Battle For
-                // Doldrey" among the three Golden Age movies).
-                if ($tryQuery !== $query) {
-                    $results = $this->rankResults($results, $query, $year);
+                if ($tryQuery === $query) {
+                    // Nothing was dropped — the API matched the title as
+                    // asked, so the hits are trusted as they stand.
+                    $titleMatched = true;
+                } else {
+                    // The query had to be shortened. Re-rank the
+                    // (greedier) results against the ORIGINAL query —
+                    // the later words may isolate the exact entry
+                    // ("...Arc 2 The Battle For Doldrey" among the three
+                    // Golden Age movies). Only when the original query
+                    // matches a title at all: if it matches nothing (a
+                    // release TVDB hasn't listed yet), re-ranking would
+                    // flatten every row to tier 5 and collapse the list
+                    // to newest-first, handing the poster to an
+                    // unrelated recent title.
+                    $titleMatched = $this->hasTitleMatch($results, $query);
+                    if ($titleMatched) {
+                        $results = $this->rankResults($results, $query, $year);
+                    }
                 }
                 $finalQuery = $tryQuery;
                 break;
@@ -617,7 +666,7 @@ class PosterCli
             array_pop($queryTokens);
         }
 
-        return ['results' => $results, 'query' => $finalQuery];
+        return ['results' => $results, 'query' => $finalQuery, 'titleMatched' => $titleMatched];
     }
 
     /**
@@ -629,6 +678,37 @@ class PosterCli
         if (is_file($dir . '/poster.jpg')) return $dir . '/poster.jpg';
         if (is_file($dir . '/poster.png')) return $dir . '/poster.png';
         return '';
+    }
+
+    /**
+     * "Did you mean?" block for a folder whose full title matched nothing
+     * on TVDB: the closest titles the shortened search did find, printed
+     * as the same table the --title search uses, so the user can rename
+     * the folder to one of them and run again. Only tier 1-4 hits against
+     * the shortened query ($needle) are listed — the unrelated fuzzy
+     * matches the API returns for any query are counted in the lead-in,
+     * not dumped, which also keeps a library scan's output readable.
+     * The lead-in and the closing line are indented to sit under the
+     * caller's "Skip   :" line.
+     */
+    private function suggestTitles(array $results, string $needle): void
+    {
+        $needle = $this->canonicalTitle($needle);
+
+        $relevant = [];
+        foreach ($results as $r) {
+            if ($this->resultTier($r, $needle) < 5) {
+                $relevant[] = $r;
+            }
+        }
+        if ($relevant === []) {
+            return;
+        }
+
+        printf("         Did you mean one of these? (%d of %d result%s match the title)\n\n",
+            count($relevant), count($results), count($results) === 1 ? '' : 's');
+        echo $this->renderTable(self::RESULT_HEADERS, $this->resultRows($relevant));
+        printf("\n         Rename the folder to one of those titles and run again.\n");
     }
 
     /**
@@ -663,6 +743,14 @@ class PosterCli
             $query  = $parsed['title'];
             $year   = $parsed['year'];
 
+            // Movie folders sometimes omit the year from the folder name
+            // — fall back to the main video file's name
+            // ("My.Movie.2018.1080p..."). The folder name wins when both
+            // carry one.
+            if ($year === 0 && $this->movieFlag) {
+                $year = $this->videoYear($cleanDir);
+            }
+
             try {
                 $hasPoster = $this->existingPoster($cleanDir) !== '';
 
@@ -683,6 +771,15 @@ class PosterCli
                 $matchedQuery = $found['query'];
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
+                    continue;
+                }
+
+                // The full folder title matched nothing on TVDB — the
+                // search only found anything by dropping words. Don't
+                // guess: report it and offer the closest titles.
+                if (!$found['titleMatched']) {
+                    printf("Skip   : %s (no match for the full title on TVDB)\n", $title);
+                    $this->suggestTitles($results, $matchedQuery);
                     continue;
                 }
 
@@ -811,6 +908,14 @@ class PosterCli
             $query  = $parsed['title'];
             $year   = $parsed['year'];
 
+            // Same second source as downloadForFolders(): the folder name
+            // wins, the main video file's name fills in when it has no
+            // year. Keeps the standalone --clean rename in step with the
+            // --posters flow.
+            if ($year === 0 && $this->movieFlag) {
+                $year = $this->videoYear($cleanDir);
+            }
+
             try {
                 // The top match supplies the API title + year for the
                 // rename step.
@@ -818,6 +923,14 @@ class PosterCli
                 $results = $found['results'];
                 if ($results === []) {
                     printf("Skip   : %s (no match found)\n", $title);
+                    continue;
+                }
+
+                // Same rule as downloadForFolders(): a title TVDB hasn't
+                // listed is not renamed on a guess.
+                if (!$found['titleMatched']) {
+                    printf("Skip   : %s (no match for the full title on TVDB)\n", $title);
+                    $this->suggestTitles($results, $found['query']);
                     continue;
                 }
 
@@ -858,6 +971,43 @@ class PosterCli
     }
 
     /**
+     * The folder's root video files (.mkv and .mp4), largest first in
+     * movie mode — scene folders sometimes carry a small "sample" video
+     * beside the feature, and the biggest file is the best candidate for
+     * the size tag, the 2160p check and the -poster copy's name. TV
+     * folders keep directory order: their files are episode releases,
+     * where the biggest episode means nothing in particular.
+     */
+    private function videoFiles(string $dir): array
+    {
+        $videos = array_merge(
+            $this->folderFiles($dir, 'mkv'),
+            $this->folderFiles($dir, 'mp4')
+        );
+        if ($this->movieFlag) {
+            usort($videos, fn($a, $b) => (@filesize($b) ?: 0) <=> (@filesize($a) ?: 0));
+        }
+        return $videos;
+    }
+
+    /**
+     * Year carried by the folder's main video file (videoFiles()), or 0
+     * when there is none. Movie folders sometimes omit the year from the
+     * folder name ("My Movie/" holding My.Movie.2018.1080p.mkv) — fold
+     * that in as a second source for the rank hint. Movie mode only: a
+     * flat TV folder's files are episode releases, where a year token
+     * may be an air year rather than the show's.
+     */
+    private function videoYear(string $dir): int
+    {
+        $videos = $this->videoFiles($dir);
+        if ($videos === []) {
+            return 0;
+        }
+        return $this->splitYear(pathinfo($videos[0], PATHINFO_FILENAME))['year'];
+    }
+
+    /**
      * --clean pass, run only after a successful poster download + copy
      * (personal tidy-up, printed as "Clean  :" lines):
      *   1. delete *.nfo and *.txt files (release-scene text files)
@@ -865,8 +1015,9 @@ class PosterCli
      *      separated, e.g. "PSA,XYZ" — bare names, the script prepends
      *      the hyphen when checking) from the end of *.mkv/*.mp4
      *      filename bases
-     *   3. save a copy of the poster next to the (first) video file,
-     *      named <video name>-poster.<ext>
+     *   3. save a copy of the poster next to the main video file
+     *      (largest first in movie mode — videoFiles()), named
+     *      <video name>-poster.<ext>
      *   4. rename the folder from the matched title closest to the
      *      searched name (own name or English title) and the year:
      *      "My Movie  (2026)" (two spaces before the year, colon →
@@ -890,10 +1041,7 @@ class PosterCli
 
         // 2. Strip release tags from video filename bases.
         $tags = PosterEnv::envList('RELEASE_TAGS');
-        $videos = array_merge(
-            $this->folderFiles($folder, 'mkv'),
-            $this->folderFiles($folder, 'mp4')
-        );
+        $videos = $this->videoFiles($folder);
         $posterBase = ''; // first video's (cleaned) base, for step 3
         $firstVideo = ''; // first video's final path, for step 4
         foreach ($videos as $i => $video) {
@@ -1204,6 +1352,47 @@ class PosterCli
     }
 
     /**
+     * Search results as rows for the result table (RESULT_HEADERS) —
+     * shared by the --title listing and the folder flows' "did you
+     * mean?" block. Missing values render as an em dash; a record with
+     * only a year and no full air date shows the bare year.
+     */
+    private function resultRows(array $results): array
+    {
+        $rows = [];
+        foreach ($results as $r) {
+            $english = $r['_english'] ?? '';
+            $rows[] = [
+                $r['id'] ?? '?',
+                $r['name'] ?? '(no name)',
+                $english !== '' ? $english : '—',
+                !empty($r['first_air_time']) ? substr($r['first_air_time'], 0, 10)
+                    : (!empty($r['year']) ? $r['year'] : '—'),
+                !empty($r['network']) ? $r['network'] : '—',
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Display width of a string, for terminal padding. mb_strwidth()
+     * measures East Asian width per character, but a terminal gives no
+     * cell to a combining mark — Devanagari "लस्ट स्टोरीज़" occupies 8
+     * cells, not the 13 mb_strwidth() reports (two viramas, the ो and ी
+     * vowel signs and the nukta ़ are all non-spacing) — so non-spacing
+     * and enclosing marks (Mn/Me) and the zero-width joiners are
+     * subtracted. Without this, a title in an Indic, Arabic or Hebrew
+     * script pushes its row's borders out of line with the rest.
+     * Falls back to the plain mb_strwidth() value if the string isn't
+     * valid UTF-8.
+     */
+    private function displayWidth(string $s): int
+    {
+        $zeroWidth = preg_match_all('/\p{Mn}|\p{Me}|\x{200B}|\x{200C}|\x{200D}/u', $s);
+        return mb_strwidth($s) - (int) $zeroWidth;
+    }
+
+    /**
      * Render an ASCII table with box-drawing borders. Header cells are
      * centered, data cells are left-aligned. Column widths grow to fit the
      * widest cell. Display width (mb_strwidth) is used for padding so wide
@@ -1213,11 +1402,11 @@ class PosterCli
     {
         $widths = [];
         foreach ($headers as $i => $h) {
-            $widths[$i] = mb_strwidth($h);
+            $widths[$i] = $this->displayWidth($h);
         }
         foreach ($rows as $row) {
             foreach ($row as $i => $cell) {
-                $widths[$i] = max($widths[$i], mb_strwidth((string) $cell));
+                $widths[$i] = max($widths[$i], $this->displayWidth((string) $cell));
             }
         }
 
@@ -1232,7 +1421,7 @@ class PosterCli
         $line = function (array $cells, bool $center) use ($widths): string {
             $parts = [];
             foreach ($cells as $i => $cell) {
-                $pad = $widths[$i] - mb_strwidth((string) $cell);
+                $pad = $widths[$i] - $this->displayWidth((string) $cell);
                 if ($center) {
                     $left = intdiv($pad, 2);
                     $parts[] = str_repeat(' ', $left + 1) . $cell . str_repeat(' ', $pad - $left + 1);
