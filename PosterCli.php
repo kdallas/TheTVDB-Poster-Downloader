@@ -1377,19 +1377,34 @@ class PosterCli
     /**
      * Display width of a string, for terminal padding. mb_strwidth()
      * measures East Asian width per character, but a terminal gives no
-     * cell to a combining mark — Devanagari "लस्ट स्टोरीज़" occupies 8
-     * cells, not the 13 mb_strwidth() reports (two viramas, the ो and ी
-     * vowel signs and the nukta ़ are all non-spacing) — so non-spacing
-     * and enclosing marks (Mn/Me) and the zero-width joiners are
-     * subtracted. Without this, a title in an Indic, Arabic or Hebrew
-     * script pushes its row's borders out of line with the rest.
-     * Falls back to the plain mb_strwidth() value if the string isn't
-     * valid UTF-8.
+     * cell to a combining mark — a Devanagari conjunct such as "क्ष"
+     * (ka + virama + ssa) is three code points and one cell — so
+     * non-spacing and enclosing marks (Mn/Me) and the zero-width
+     * joiners are subtracted. Without this, a title in an Indic, Arabic
+     * or Hebrew script pushes its row's borders out of line with the
+     * rest. Falls back to the plain mb_strwidth() value if the string
+     * isn't valid UTF-8 (preg_match_all returns false, which casts to 0).
+     *
+     * TABLE_MARKS_ADJUST (.env, default 0) nudges that measurement, once
+     * per cell holding any such mark. Whether a terminal spends one cell
+     * or two on a conjunct depends on how its font shapes the glyphs,
+     * not on the characters, so no rule reading the string alone can
+     * match it: a terminal that draws conjuncts as single glyphs
+     * measures a cell narrower than the Unicode rule and needs -1 here
+     * to line up. Only cells with marks are nudged — applying it to
+     * every cell would shift the rows that were already right, since the
+     * border widths are computed from these same measurements.
      */
     private function displayWidth(string $s): int
     {
-        $zeroWidth = preg_match_all('/\p{Mn}|\p{Me}|\x{200B}|\x{200C}|\x{200D}/u', $s);
-        return mb_strwidth($s) - (int) $zeroWidth;
+        $marks = (int) preg_match_all('/\p{Mn}|\p{Me}|\x{200B}|\x{200C}|\x{200D}/u', $s);
+        $width = mb_strwidth($s) - $marks;
+
+        if ($marks > 0) {
+            $width += (int) (PosterEnv::env()['TABLE_MARKS_ADJUST'] ?? 0);
+        }
+
+        return $width;
     }
 
     /**
