@@ -1,8 +1,8 @@
 <?php
 
 /**
- * TVDB API client: login, token management, GET requests, and file
- * downloads. .env access lives in PosterEnv, so this class stays purely
+ * TVDB API client: login, token management and GET requests. Config and
+ * session access live in PosterEnv/AuthStore, so this class stays purely
  * about the API. Static methods.
  */
 
@@ -26,7 +26,7 @@ class TvdbApi
 
     /**
      * Exchange the API key in .env for a bearer token and store it (plus its
-     * expiry timestamp) back into .env. Returns [token, expiry].
+     * expiry timestamp) in .auth.json via AuthStore. Returns [token, expiry].
      */
     public static function login(): array
     {
@@ -75,44 +75,23 @@ class TvdbApi
         $token = $data['data']['token'];
         $expiry = self::jwtExpiry($token) ?? time() + 30 * 24 * 60 * 60;
 
-        // Write token and expiry back into .env, leaving everything else untouched.
-        $contents = file_get_contents(PosterEnv::envFile());
-        $contents = preg_replace('/^AUTH_TOKEN=.*$/m', 'AUTH_TOKEN=' . $token, $contents);
-        $contents = preg_replace('/^AUTH_EXPIRY=.*$/m', 'AUTH_EXPIRY=' . $expiry, $contents);
-
-        // Appending only works cleanly if the file ends with a newline —
-        // otherwise the new key glues onto the last existing line.
-        if ($contents !== '' && !str_ends_with($contents, "\n")) {
-            $contents .= PHP_EOL;
-        }
-        if (!preg_match('/^AUTH_TOKEN=/m', $contents)) {
-            $contents .= 'AUTH_TOKEN=' . $token . PHP_EOL;
-        }
-        if (!preg_match('/^AUTH_EXPIRY=/m', $contents)) {
-            $contents .= 'AUTH_EXPIRY=' . $expiry . PHP_EOL;
-        }
-
-        if (file_put_contents(PosterEnv::envFile(), $contents) === false) {
-            throw new Exception('Could not write ' . PosterEnv::envFile());
-        }
-
-        // The file changed — drop PosterEnv's cache so the new token and
-        // expiry are what subsequent reads see.
-        PosterEnv::refresh();
+        // Persist the session for later runs. .env is left alone — it is
+        // user config and the scripts only ever read it now.
+        AuthStore::write($token, $expiry);
 
         return [$token, $expiry];
     }
 
     /**
-     * Get a usable bearer token. Reuses the one stored in .env, but logs in
-     * fresh when it is missing, expired, or within TOKEN_MIN_LIFETIME
-     * (1 day) of expiring.
+     * Get a usable bearer token. Reuses the one stored in .auth.json, but
+     * logs in fresh when it is missing, expired, or within
+     * TOKEN_MIN_LIFETIME (1 day) of expiring.
      */
     public static function token(): string
     {
-        $env = PosterEnv::env();
-        $token = $env['AUTH_TOKEN'] ?? '';
-        $expiry = (int) ($env['AUTH_EXPIRY'] ?? 0);
+        $auth = AuthStore::read();
+        $token = $auth['token'];
+        $expiry = $auth['expiry'];
 
         if ($token === '' || $expiry === 0 || time() >= $expiry - self::TOKEN_MIN_LIFETIME) {
             [$token, $expiry] = self::login();

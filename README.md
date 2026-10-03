@@ -16,7 +16,7 @@ A small PHP CLI tool that talks to the [TheTVDB v4 API](https://thetvdb.github.i
    API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
    ```
 
-   The `AUTH_TOKEN` and `AUTH_EXPIRY` entries are written automatically by the scripts — you only provide the key.
+   The login session (token + expiry) is kept separately in a gitignored `.auth.json`, written automatically by the scripts — `.env` itself is never modified, so it only needs your key.
 
    Optionally add `CACHE_ARTWORK=false` to skip the `artwork/` cache: posters are then downloaded straight into each folder and no extra copy is kept.
 
@@ -24,7 +24,7 @@ A small PHP CLI tool that talks to the [TheTVDB v4 API](https://thetvdb.github.i
 
 2. Run `php run.php` — you can invoke it from any directory; the scripts resolve the classes and `.env` relative to the project folder itself.
 
-Login happens automatically on first run — there is deliberately no login command. The token is reused until one day before it expires, to avoid requesting more tokens than necessary. `.env` holds live secrets and is gitignored.
+Login happens automatically on first run — there is deliberately no login command. The token is reused until one day before it expires, to avoid requesting more tokens than necessary. `.env` holds live secrets; both it and the `.auth.json` session file are gitignored.
 
 ## Usage
 

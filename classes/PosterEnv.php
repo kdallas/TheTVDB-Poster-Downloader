@@ -22,9 +22,9 @@ class PosterEnv
 
     /**
      * Parse .env into KEY=VALUE pairs (skipping comments and blank
-     * lines). Read from disk once per run, then served from memory —
-     * TvdbApi::login() calls refresh() after rewriting the file so the
-     * cache always reflects a fresh token.
+     * lines). Read from disk once per run, then served from memory. The
+     * scripts never write .env (the login session lives in .auth.json),
+     * so the cache cannot go stale mid-run.
      */
     public static function env(): array
     {
@@ -49,12 +49,6 @@ class PosterEnv
             self::$cache = $env;
         }
         return self::$cache;
-    }
-
-    /** Drop the cached parse so the next env() reads the file afresh. */
-    public static function refresh(): void
-    {
-        self::$cache = null;
     }
 
     /**

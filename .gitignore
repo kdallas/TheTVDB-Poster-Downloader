@@ -14,6 +14,9 @@ target/
 .env.yml
 .env.yaml
 
+# Login session (token + expiry)
+.auth.json
+
 # Downloaded artwork (script output)
 artwork/
 
