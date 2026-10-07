@@ -294,6 +294,28 @@ class PosterCli
     }
 
     /**
+     * The year a search row is ranked and renamed by. `year` wins over
+     * the date, because TVDB's /search index can carry a stale
+     * first_air_time: a 2026 film came back filed under 2018-12-31 while
+     * that same row's `year`, its `extended_title` ("Name (2026)") and
+     * /movies/{id}/extended's first_release all said 2026.
+     *
+     * Checked against the canonical records, `year` was right every time
+     * for both media types. For series the two fields always agreed (and
+     * matched firstAired) and are present or absent together, so this
+     * precedence is a no-op there; for movies `year` was right in every
+     * sample while the date was empty in some rows and stale in one.
+     * The fallback still carries weight: roughly one movie row in six
+     * comes back with a date and no year at all — and every TMDB row is
+     * in that shape, since tmdbRows() leaves `year` at 0 and puts the
+     * release date in first_air_time.
+     */
+    private function rowYear(array $row): int
+    {
+        return (int) ($row['year'] ?? 0) ?: (int) substr($row['first_air_time'] ?? '', 0, 4);
+    }
+
+    /**
      * Rank search results, best match first:
      *   1. The series' own name IS the term ("Solos")
      *   2. The own name CONTAINS the term ("Kaleidoscope (2023)")
@@ -328,9 +350,7 @@ class PosterCli
 
         // Tier number for a single result; lower = better.
         $tier = fn(array $r) => $this->resultTier($r, $needle);
-        // Some records only carry a year, no full air date — use it as
-        // the fallback so new releases rank correctly.
-        $yearOf = fn(array $r) => (int) (substr($r['first_air_time'] ?? '', 0, 4) ?: ($r['year'] ?? 0));
+        $yearOf = fn(array $r) => $this->rowYear($r);
 
         // Decorate-sort-undecorate: compute each row's rank keys once,
         // then sort on the precomputed values. Comparing rows directly
@@ -1270,7 +1290,7 @@ class PosterCli
         // (2026)" (two spaces before the year, colon → semicolon), then
         // the size tag and, when the filename says 2160p, ".4k".
         if ($firstVideo !== '' && $matchedRow !== null) {
-            $apiYear = (int) (substr($matchedRow['first_air_time'] ?? '', 0, 4) ?: ($matchedRow['year'] ?? 0));
+            $apiYear = $this->rowYear($matchedRow);
             if ($apiYear === 0) {
                 $apiYear = $folderYearHint; // folder-name year as a fallback
             }
