@@ -907,6 +907,14 @@ class PosterCli
 
         printf("Matched: \"%s\" (%s)\n", $this->closestTitle($winner, $query), $mediaId);
 
+        // TMDB's title is the en-US one; show the original-language title
+        // when it says something different, so an anglicised match is
+        // visible rather than implied by the id alone.
+        $original = $winner['_original'] ?? '';
+        if ($original !== '' && $this->canonicalTitle($original) !== $this->canonicalTitle($winner['name'] ?? '')) {
+            printf("Orig   : %s\n", $original);
+        }
+
         $target = $this->savePoster($url, $cacheName, $folder);
         $nth = $attempt > 1 ? ' [' . $this->ordinal($attempt) . ']' : '';
         printf("Done   : %s → %s (%s)%s\n",
@@ -926,6 +934,21 @@ class PosterCli
 
         $this->tmdbCredit();
         return true;
+    }
+
+    /**
+     * The tail of a "TVDB   :" line printed when a folder is about to
+     * continue to TMDB: the title, year and id of the match TVDB did
+     * offer, so the candidate being passed over is on the record. A
+     * record with no year shows "year unknown" rather than (0).
+     */
+    private function bestMatchText(array $row, string $query): string
+    {
+        $year = $this->rowYear($row);
+        return sprintf('best was "%s" (%s, %s)',
+            $this->closestTitle($row, $query),
+            $year > 0 ? (string) $year : 'year unknown',
+            $row['id'] ?? '?');
     }
 
     /**
@@ -1013,8 +1036,13 @@ class PosterCli
                 $results = $found['results'];
                 $matchedQuery = $found['query'];
                 if ($results === []) {
-                    if (!$hasPoster && $this->tmdbFallback($cleanDir, $query, $year, $title)) {
-                        continue;
+                    if (!$hasPoster) {
+                        if (TmdbApi::apiKey() !== '') {
+                            printf("TVDB   : no results for \"%s\"\n", $query);
+                        }
+                        if ($this->tmdbFallback($cleanDir, $query, $year, $title)) {
+                            continue;
+                        }
                     }
                     printf("Skip   : %s (no match found)\n", $title);
                     continue;
@@ -1023,10 +1051,17 @@ class PosterCli
                 // The full folder title matched nothing on TVDB — the
                 // search only found anything by dropping words. Don't
                 // guess: ask TMDB instead, and fall back to reporting the
-                // closest TVDB titles if it has nothing either.
+                // closest TVDB titles if it has nothing either. The TVDB
+                // line records what was passed over before the lookup.
                 if (!$found['titleMatched']) {
-                    if (!$hasPoster && $this->tmdbFallback($cleanDir, $query, $year, $title)) {
-                        continue;
+                    if (!$hasPoster) {
+                        if (TmdbApi::apiKey() !== '') {
+                            printf("TVDB   : no match for the full title — %s\n",
+                                $this->bestMatchText($results[0], $matchedQuery));
+                        }
+                        if ($this->tmdbFallback($cleanDir, $query, $year, $title)) {
+                            continue;
+                        }
                     }
                     printf("Skip   : %s (no match for the full title on TVDB)\n", $title);
                     $this->suggestTitles($results, $matchedQuery);
@@ -1073,17 +1108,26 @@ class PosterCli
                 // Movie folders name a year: when TVDB's best usable match
                 // is from another year, ask TMDB for the film the folder
                 // actually names before settling for the wrong one. The
-                // TMDB path saves its own poster and renames as usual.
+                // TVDB line records the candidate being passed over; the
+                // TMDB path then saves its own poster and renames as usual.
+                $tvdbLineShown = false;
                 if ($this->movieFlag && $year > 0 && !$hasPoster
-                    && $this->rowYear($matchedRow) !== $year
-                    && $this->tmdbFallback($cleanDir, $query, $year, $title, true)) {
-                    continue;
+                    && $this->rowYear($matchedRow) !== $year) {
+                    if (TmdbApi::apiKey() !== '') {
+                        printf("TVDB   : no %d match — %s\n",
+                            $year, $this->bestMatchText($matchedRow, $matchedQuery));
+                        $tvdbLineShown = true;
+                    }
+                    if ($this->tmdbFallback($cleanDir, $query, $year, $title, true)) {
+                        continue;
+                    }
                 }
 
-                // Neither database found the requested year — say which
-                // year the chosen match is from, so the rename is not a
-                // silent surprise.
-                $this->yearMismatchNote($matchedRow, $year, $matchedQuery);
+                // When TVDB's match is what we ended up using, say which
+                // year it is — unless the line above already did.
+                if (!$tvdbLineShown) {
+                    $this->yearMismatchNote($matchedRow, $year, $matchedQuery);
+                }
 
                 // Report what the folder matched on (the title closest to
                 // the query that actually matched, plus the id).

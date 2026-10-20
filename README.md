@@ -83,6 +83,8 @@ When TVDB has no record of the title at all, the folder is looked up on [TMDB](h
 
 Movie folders get a second trigger: when the folder names a year and TVDB's best usable match is from a different year, TMDB is asked for the film from the requested year and its poster is used if it has one. When neither database has a match from that year — or for a TV folder, where there is no second lookup — the run prints `Note   : no 2026 match — using "My Movie" (2016)` above the `Matched:` line, so a year change is never silent.
 
+Before any TMDB lookup the run also reports what TVDB offered — `TVDB   : no 2026 match — best was "My Movie" (2016, movie-1234)`, or `TVDB   : no results for "My Movie"` — and a TMDB match whose original-language title differs from its English one gets an `Orig   :` line under `Matched:`, so an anglicised match is visible rather than implied.
+
 You can also point `--scan` directly at a single show folder rather than a library — a folder whose children are `Season N` folders, or a flat folder with the episode files sitting directly inside, is detected and processed on its own:
 
 ```sh
