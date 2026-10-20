@@ -835,13 +835,21 @@ class PosterCli
      * recent its year. Returns true when the folder was handled; false
      * lets the caller print its own TVDB skip line and suggestions.
      *
-     * Only the poster comes from TMDB: cleanFolder() is handed a null
-     * $matchedRow, which no-ops its rename step. TMDB is queried with
-     * language=en-US, so its title would anglicise a foreign-named folder
-     * that closestTitle() keeps native on the TVDB side. The rest of the
-     * tidy-up (text files, release tags, the -poster copy) still runs.
+     * $requireYear turns the folder's year from a hint into a filter:
+     * only candidates from that year are considered, and none means no
+     * fallback. The movie flow uses it when TVDB's best usable match is
+     * from another year, so the replacement is the film the folder
+     * actually names rather than merely the closest title.
+     *
+     * A TMDB match is renamed like any other, using TMDB's title and
+     * release year. That is safe because the row has already passed the
+     * same hasTitleMatch() gate as a TVDB result: its en-US title equals
+     * or contains the folder's own queried name, so a folder named in
+     * another script can never reach this point (TMDB's English title
+     * would not contain the foreign query). The rest of the tidy-up
+     * (text files, release tags, the -poster copy) runs as usual.
      */
-    private function tmdbFallback(string $folder, string $query, int $year, string $title): bool
+    private function tmdbFallback(string $folder, string $query, int $year, string $title, bool $requireYear = false): bool
     {
         // No key configured: keep the TVDB-only behaviour, silently —
         // repeating the advice on every unmatched folder would be noise.
@@ -864,6 +872,16 @@ class PosterCli
 
         // The same year hint and ranking the TVDB search would have used.
         $rows = $this->rankResults($rows, $query, $year);
+
+        if ($requireYear && $year > 0) {
+            // A filter this time, not a hint: a same-title film from
+            // another year is exactly what the caller is avoiding.
+            $rows = array_values(array_filter($rows, fn($r) => $this->rowYear($r) === $year));
+            if ($rows === []) {
+                return false;
+            }
+        }
+
         if (!$this->hasTitleMatch($rows, $query)) {
             return false;
         }
@@ -895,10 +913,10 @@ class PosterCli
             $title, Paths::sanitizePath($target, false), $mediaId, $nth);
 
         if ($this->cleanFlag) {
-            // Steps 1-3 (text files, release tags, the -poster copy) —
-            // the null row is what keeps the rename out of it.
-            $this->cleanFolder($folder, $target, null, $year, $query);
-            printf("Clean  : rename skipped for \"%s\" (matched on TMDB)\n", $title);
+            // Renames too, using TMDB's title + release year (rowYear()
+            // falls back to the release date, since TMDB rows carry no
+            // `year` field).
+            $this->cleanFolder($folder, $target, $winner, $year, $query);
         }
         if ($this->seasonsFlag) {
             // The fallback returns before the season pass: seasons come
@@ -908,6 +926,30 @@ class PosterCli
 
         $this->tmdbCredit();
         return true;
+    }
+
+    /**
+     * Say so when the match used is not from the year the folder asked
+     * for. A year is only ever a ranking hint — folder years can be
+     * wrong, so it must not filter the search — but the old behaviour
+     * was silent: a folder named for a 2026 film TVDB has no record of
+     * was matched to a same-name film from 1939 and renamed to
+     * "Name  (1939)" with nothing to explain the change. This is that
+     * explanation. Movies try TMDB for the requested year first; when
+     * this still fires, neither database had one.
+     */
+    private function yearMismatchNote(?array $row, int $year, string $query): void
+    {
+        if ($row === null || $year === 0) {
+            return;
+        }
+        $found = $this->rowYear($row);
+        if ($found === 0 || $found === $year) {
+            return;
+        }
+
+        printf("Note   : no %d match — using \"%s\" (%d)\n",
+            $year, $this->closestTitle($row, $query), $found);
     }
 
     /**
@@ -1028,6 +1070,21 @@ class PosterCli
                     $matchedRow = $results[0];
                 }
 
+                // Movie folders name a year: when TVDB's best usable match
+                // is from another year, ask TMDB for the film the folder
+                // actually names before settling for the wrong one. The
+                // TMDB path saves its own poster and renames as usual.
+                if ($this->movieFlag && $year > 0 && !$hasPoster
+                    && $this->rowYear($matchedRow) !== $year
+                    && $this->tmdbFallback($cleanDir, $query, $year, $title, true)) {
+                    continue;
+                }
+
+                // Neither database found the requested year — say which
+                // year the chosen match is from, so the rename is not a
+                // silent surprise.
+                $this->yearMismatchNote($matchedRow, $year, $matchedQuery);
+
                 // Report what the folder matched on (the title closest to
                 // the query that actually matched, plus the id).
                 printf("Matched: \"%s\" (%s-%s)\n",
@@ -1144,6 +1201,10 @@ class PosterCli
 
                 // Poster copy source: the folder's existing poster, if any.
                 $poster = $this->existingPoster($cleanDir);
+
+                // Same warning as the --posters flow: the rename below
+                // will carry a year that differs from the folder's.
+                $this->yearMismatchNote($results[0], $year, $found['query']);
 
                 $this->cleanFolder($cleanDir, $poster, $results[0], $year, $found['query']);
             } catch (Exception $e) {
